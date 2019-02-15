@@ -1,4 +1,5 @@
 // includes
+const agentkeepalive = require('agentkeepalive').HttpsAgent;
 import cmd = require('commander');
 import crypto = require('crypto');
 import dotenv = require('dotenv');
@@ -43,9 +44,14 @@ cmd.option(
         'FILE_COUNT. The number of files to create (simultaneous). Default is "100".',
         parseInt
     )
+    .option(
+        '-m, --max-sockets <i>',
+        'MAX_SOCKETS. The total number of simultaneous outbound connections. Default is "1000".',
+        parseInt
+    )
     .parse(process.argv);
 
-// globals
+// variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const STORAGE_ACCOUNT = cmd.account || process.env.STORAGE_ACCOUNT;
 const STORAGE_CONTAINER = cmd.container || process.env.STORAGE_CONTAINER;
@@ -53,6 +59,24 @@ const STORAGE_KEY = cmd.key || process.env.STORAGE_KEY;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const FILE_SIZE = cmd.fileSize || process.env.FILE_SIZE || 100;
 const FILE_COUNT = cmd.fileCount || process.env.FILE_COUNT || 100;
+const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
+
+// counters
+const counters = {
+    count: 0,
+    wait: 0,
+    dns: 0,
+    tcp: 0,
+    firstByte: 0,
+    download: 0,
+    total: 0
+};
+
+// agent
+const agent = new agentkeepalive({
+    keepAlive: true,
+    maxSockets: MAX_SOCKETS
+});
 
 // start logging
 const logColors: {
@@ -133,12 +157,14 @@ function createBlob(filename: string, content: string) {
     return new Promise((resolve, reject) => {
         // specify the request options, including the headers
         const options = {
+            agent,
             body: content,
             headers: {
                 'x-ms-blob-type': 'BlockBlob',
                 'x-ms-date': new Date().toUTCString(),
                 'x-ms-version': '2017-07-29'
             } as any,
+            time: true,
             url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${
                 STORAGE_SAS ? STORAGE_SAS + '&' : '?'
             }`
@@ -157,6 +183,15 @@ function createBlob(filename: string, content: string) {
                 response.statusCode >= 200 &&
                 response.statusCode < 300
             ) {
+                if (response.timingPhases) {
+                    counters.count++;
+                    counters.wait += response.timingPhases.wait;
+                    counters.dns += response.timingPhases.dns;
+                    counters.tcp += response.timingPhases.tcp;
+                    counters.firstByte += response.timingPhases.firstByte;
+                    counters.download += response.timingPhases.download;
+                    counters.total += response.timingPhases.total;
+                }
                 resolve();
             } else if (error) {
                 reject(error);
@@ -197,6 +232,7 @@ async function startup() {
         );
         logger.info(`FILE_SIZE is "${FILE_SIZE}" kb.`);
         logger.info(`FILE_COUNT is "${FILE_COUNT}".`);
+        logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
 
         // validate
         if (!STORAGE_KEY && !STORAGE_SAS) {
@@ -209,7 +245,9 @@ async function startup() {
         for (let i = 0; i < FILE_COUNT; i++) {
             const id = uuid();
             const data = generate();
-            const promise = createBlob(id, data);
+            const promise = createBlob(id, data).catch(error => {
+                logger.error(error);
+            });
             promises.push(promise);
         }
 
@@ -221,6 +259,32 @@ async function startup() {
         const fullTime = new Date().valueOf() - startTime;
         logger.info(
             `duration: ${fullTime - prepTime} ms (prep: ${prepTime} ms)`
+        );
+        logger.info(`count: ${counters.count}`);
+        logger.info(
+            `wait: ${Math.round(counters.wait)} (${Math.round(
+                (counters.wait / counters.total) * 100
+            )}%)`
+        );
+        logger.info(
+            `dns: ${Math.round(counters.dns)} (${Math.round(
+                (counters.dns / counters.total) * 100
+            )}%)`
+        );
+        logger.info(
+            `tcp: ${Math.round(counters.tcp)} (${Math.round(
+                (counters.tcp / counters.total) * 100
+            )}%)`
+        );
+        logger.info(
+            `firstByte: ${Math.round(counters.firstByte)} (${Math.round(
+                (counters.firstByte / counters.total) * 100
+            )}%)`
+        );
+        logger.info(
+            `download: ${Math.round(counters.download)} (${Math.round(
+                (counters.download / counters.total) * 100
+            )}%)`
         );
     } catch (error) {
         logger.error(`Error during startup...`);
