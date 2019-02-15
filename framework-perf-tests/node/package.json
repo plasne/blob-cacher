@@ -22,6 +22,7 @@
     "agentkeepalive": "^4.0.0",
     "commander": "^2.19.0",
     "dotenv": "^6.2.0",
+    "lookup-dns-cache": "^2.1.0",
     "lorem-ipsum": "^1.0.6",
     "query-string": "^6.2.0",
     "request": "^2.88.0",

@@ -12,6 +12,7 @@ const agentkeepalive = require('agentkeepalive').HttpsAgent;
 const cmd = require("commander");
 const crypto = require("crypto");
 const dotenv = require("dotenv");
+const lookup_dns_cache_1 = require("lookup-dns-cache");
 const loremIpsum = require("lorem-ipsum");
 const uuid_1 = require("uuid");
 const winston = __importStar(require("winston"));
@@ -120,6 +121,7 @@ function createBlob(filename, content) {
                 'x-ms-date': new Date().toUTCString(),
                 'x-ms-version': '2017-07-29'
             },
+            lookup: lookup_dns_cache_1.lookup,
             time: true,
             url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${STORAGE_SAS ? STORAGE_SAS + '&' : '?'}`
         };

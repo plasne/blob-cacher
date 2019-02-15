@@ -3,6 +3,7 @@ const agentkeepalive = require('agentkeepalive').HttpsAgent;
 import cmd = require('commander');
 import crypto = require('crypto');
 import dotenv = require('dotenv');
+import { lookup } from 'lookup-dns-cache';
 import loremIpsum = require('lorem-ipsum');
 import { v4 as uuid } from 'uuid';
 import * as winston from 'winston';
@@ -109,7 +110,7 @@ const logger = winston.createLogger({
 // function to generate a signature using a storage key
 function generateSignature(method: string, path: string, options: any) {
     // pull out all querystring parameters so they can be sorted and used in the signature
-    const parameters = [];
+    const parameters: string[] = [];
     const parsed = querystring.parseUrl(options.url);
     for (const key in parsed.query) {
         if (Object.prototype.hasOwnProperty.call(parsed.query, key)) {
@@ -119,7 +120,7 @@ function generateSignature(method: string, path: string, options: any) {
     parameters.sort((a, b) => a.localeCompare(b));
 
     // pull out all x-ms- headers so they can be sorted and used in the signature
-    const xheaders = [];
+    const xheaders: string[] = [];
     for (const key in options.headers) {
         if (key.substring(0, 5) === 'x-ms-') {
             xheaders.push(`${key}:${options.headers[key]}`);
@@ -164,6 +165,7 @@ function createBlob(filename: string, content: string) {
                 'x-ms-date': new Date().toUTCString(),
                 'x-ms-version': '2017-07-29'
             } as any,
+            lookup,
             time: true,
             url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${
                 STORAGE_SAS ? STORAGE_SAS + '&' : '?'
