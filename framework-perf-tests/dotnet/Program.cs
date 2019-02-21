@@ -87,6 +87,7 @@ namespace blob_cacher_dotnet_test
                         CloudBlobContainer container = client.GetContainerReference(STORAGE_CONTAINER);
 
                         // run all at the same time
+                        Stopwatch watch = Stopwatch.StartNew();
                         for (int i = 0; i < FILE_COUNT; i++)
                         {
 
@@ -104,7 +105,6 @@ namespace blob_cacher_dotnet_test
                     }
 
                     // report on the time it took
-                    Stopwatch watch = Stopwatch.StartNew();
                     Task.WaitAll(tasks.ToArray());
                     watch.Stop();
                     Console.WriteLine(watch.ElapsedMilliseconds + " milliseconds");
