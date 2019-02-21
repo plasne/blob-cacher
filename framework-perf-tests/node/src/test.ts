@@ -220,8 +220,6 @@ function generate() {
 // startup function
 async function startup() {
     try {
-        const startTime = new Date().valueOf();
-
         // log
         console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
         logger.info(`STORAGE_ACCOUNT is "${STORAGE_ACCOUNT}".`);
@@ -242,26 +240,33 @@ async function startup() {
             process.exit(1);
         }
 
-        // create
-        const promises: Array<Promise<any>> = [];
+        // create random data
+        const files: { id: string; data: string }[] = [];
         for (let i = 0; i < FILE_COUNT; i++) {
             const id = uuid();
             const data = generate();
-            const promise = createBlob(id, data).catch(error => {
+            files.push({ id, data });
+        }
+
+        // start the clock
+        const startTime = new Date().valueOf();
+
+        // post the data all at the same time
+        const promises: Array<Promise<any>> = [];
+        for (let i = 0; i < FILE_COUNT; i++) {
+            const o = files[i];
+            const promise = createBlob(o.id, o.data).catch(error => {
                 logger.error(error);
             });
             promises.push(promise);
         }
 
         // wait for completion
-        const prepTime = new Date().valueOf() - startTime;
         await Promise.all(promises);
 
         // calculate duration
         const fullTime = new Date().valueOf() - startTime;
-        logger.info(
-            `duration: ${fullTime - prepTime} ms (prep: ${prepTime} ms)`
-        );
+        logger.info(`duration: ${fullTime} ms`);
         logger.info(`count: ${counters.count}`);
         logger.info(
             `wait: ${Math.round(counters.wait)} (${Math.round(
