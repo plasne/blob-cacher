@@ -102,12 +102,12 @@ namespace blob_cacher_dotnet_test
 
                         }
 
-                    }
+                        // report on the time it took
+                        Task.WaitAll(tasks.ToArray());
+                        watch.Stop();
+                        Console.WriteLine(watch.ElapsedMilliseconds + " milliseconds");
 
-                    // report on the time it took
-                    Task.WaitAll(tasks.ToArray());
-                    watch.Stop();
-                    Console.WriteLine(watch.ElapsedMilliseconds + " milliseconds");
+                    }
 
                 });
 
