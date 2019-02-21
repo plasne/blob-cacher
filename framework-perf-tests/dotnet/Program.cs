@@ -88,7 +88,6 @@ namespace blob_cacher_dotnet_test
 
                         // establish the client
                         CloudBlobClient client = account.CreateCloudBlobClient();
-                        client.DefaultRequestOptions.SingleBlobUploadThresholdInBytes = 4 * 1024 * 1024;
                         CloudBlobContainer container = client.GetContainerReference(STORAGE_CONTAINER);
 
                         // generate random data
