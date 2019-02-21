@@ -8,7 +8,8 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 // includes
-const agentkeepalive = require('agentkeepalive');
+const agentkeepalive = require("agentkeepalive");
+const cluster = require("cluster");
 const cmd = require("commander");
 const crypto = require("crypto");
 const dotenv = require("dotenv");
@@ -29,7 +30,8 @@ cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, w
     .option('-s, --sas <s>', '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.')
     .option('-z, --file-size <i>', 'FILE_SIZE. The file to be used for testing will be roughly this size in kilobytes. Default is "100" kb.', parseInt)
     .option('-n, --file-count <i>', 'FILE_COUNT. The number of files to create (simultaneous). Default is "100".', parseInt)
-    .option('-m, --max-sockets <i>', 'MAX_SOCKETS. The total number of simultaneous outbound connections. Default is "1000".', parseInt)
+    .option('-m, --max-sockets <i>', 'MAX_SOCKETS. The total number of simultaneous outbound connections (per process). Default is "1000".', parseInt)
+    .option('-p, --processes <i>', 'PROCESSES. The number of processes that the work should be divided between. Default is "1".', parseInt)
     .parse(process.argv);
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
@@ -41,8 +43,10 @@ const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const FILE_SIZE = cmd.fileSize || process.env.FILE_SIZE || 100;
 const FILE_COUNT = cmd.fileCount || process.env.FILE_COUNT || 100;
 const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
+const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
 // counters
 const counters = {
+    duration: 0,
     count: 0,
     wait: 0,
     dns: 0,
@@ -174,46 +178,23 @@ function generate() {
         units: 'words'
     });
 }
-// startup function
-async function startup() {
+async function spawn(count) {
     try {
-        // log
-        console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
-        logger.info(`STORAGE_ACCOUNT is "${STORAGE_ACCOUNT}".`);
-        logger.info(`STORAGE_CONTAINER is "${STORAGE_CONTAINER}".`);
-        logger.info(`URL is "${URL}".`);
-        logger.info(`STORAGE_KEY is "${STORAGE_KEY ? 'defined' : 'undefined'}"`);
-        logger.info(`STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`);
-        logger.info(`FILE_SIZE is "${FILE_SIZE}" kb.`);
-        logger.info(`FILE_COUNT is "${FILE_COUNT}".`);
-        logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
-        // validate
-        if ((STORAGE_ACCOUNT && STORAGE_CONTAINER) || URL) {
-            // ok
-        }
-        else {
-            logger.error('You must specify both STORAGE_ACCOUNT and STORAGE_CONTAINER unless using URL.');
-            process.exit(1);
-        }
-        if (STORAGE_KEY || STORAGE_SAS || URL) {
-            // ok
-        }
-        else {
-            logger.error('You must specify either STORAGE_KEY or STORAGE_SAS unless using URL.');
-            process.exit(1);
-        }
+        logger.verbose(`worker pid "${process.pid}" started...`);
         // create random data
+        logger.verbose(`worker pid "${process.pid}" generating data...`);
         const files = [];
-        for (let i = 0; i < FILE_COUNT; i++) {
+        for (let i = 0; i < count; i++) {
             const id = uuid_1.v4();
             const data = generate();
             files.push({ id, data });
         }
+        logger.verbose(`worker pid "${process.pid}" finished generating data.`);
         // start the clock
         const startTime = new Date().valueOf();
         // post the data all at the same time
         const promises = [];
-        for (let i = 0; i < FILE_COUNT; i++) {
+        for (let i = 0; i < count; i++) {
             const o = files[i];
             const promise = createBlob(o.id, o.data).catch(error => {
                 logger.error(`Error during createBlob...`);
@@ -222,16 +203,96 @@ async function startup() {
             promises.push(promise);
         }
         // wait for completion
+        logger.verbose(`worker pid "${process.pid}" sending ${files.length} files...`);
         await Promise.all(promises);
+        logger.verbose(`worker pid "${process.pid}" sent ${files.length} files.`);
+        // record the time
+        const duration = new Date().valueOf() - startTime;
+        logger.verbose(`worker pid "${process.pid}" completed after ${duration} ms.`);
+        counters.duration += duration;
+        if (process.send)
+            process.send(JSON.stringify(counters));
+    }
+    catch (error) {
+        logger.error(`Error during spawn...`);
+        logger.error(error.message);
+    }
+}
+function display() {
+    logger.info(`duration: ${counters.duration} ms`);
+    logger.info(`count: ${counters.count}`);
+    logger.info(`wait: ${Math.round(counters.wait)} (${Math.round((counters.wait / counters.total) * 100)}%)`);
+    logger.info(`dns: ${Math.round(counters.dns)} (${Math.round((counters.dns / counters.total) * 100)}%)`);
+    logger.info(`tcp: ${Math.round(counters.tcp)} (${Math.round((counters.tcp / counters.total) * 100)}%)`);
+    logger.info(`firstByte: ${Math.round(counters.firstByte)} (${Math.round((counters.firstByte / counters.total) * 100)}%)`);
+    logger.info(`download: ${Math.round(counters.download)} (${Math.round((counters.download / counters.total) * 100)}%)`);
+}
+// startup function
+async function startup() {
+    try {
+        // spawn the appropriate number of processes
+        if (cluster.isMaster) {
+            // log
+            console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
+            logger.info(`STORAGE_ACCOUNT is "${STORAGE_ACCOUNT}".`);
+            logger.info(`STORAGE_CONTAINER is "${STORAGE_CONTAINER}".`);
+            logger.info(`URL is "${URL}".`);
+            logger.info(`STORAGE_KEY is "${STORAGE_KEY ? 'defined' : 'undefined'}"`);
+            logger.info(`STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`);
+            logger.info(`FILE_SIZE is "${FILE_SIZE}" kb.`);
+            logger.info(`FILE_COUNT is "${FILE_COUNT}".`);
+            logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
+            logger.info(`PROCESSES is "${PROCESSES}".`);
+            // validate
+            if ((STORAGE_ACCOUNT && STORAGE_CONTAINER) || URL) {
+                // ok
+            }
+            else {
+                logger.error('You must specify both STORAGE_ACCOUNT and STORAGE_CONTAINER unless using URL.');
+                process.exit(1);
+            }
+            if (STORAGE_KEY || STORAGE_SAS || URL) {
+                // ok
+            }
+            else {
+                logger.error('You must specify either STORAGE_KEY or STORAGE_SAS unless using URL.');
+                process.exit(1);
+            }
+            // spawn workers
+            for (let i = 0; i < PROCESSES; i++) {
+                cluster.fork();
+            }
+            // look for a counters message from the worker; then merge and terminate it
+            cluster.on('message', (worker, message) => {
+                const remote = JSON.parse(message);
+                if (remote.duration > counters.duration) {
+                    counters.duration = remote.duration;
+                }
+                counters.count += remote.count;
+                counters.wait += remote.wait;
+                counters.dns += remote.dns;
+                counters.tcp += remote.tcp;
+                counters.firstByte += remote.firstByte;
+                counters.download += remote.download;
+                counters.total += remote.total;
+                worker.kill();
+            });
+            // wait for all workers to complete
+            await new Promise(resolve => {
+                let exits = 0;
+                cluster.on('exit', () => {
+                    exits++;
+                    if (exits >= PROCESSES)
+                        resolve();
+                });
+            });
+            // display final stats
+            display();
+        }
+        else {
+            spawn(FILE_COUNT / PROCESSES);
+        }
         // calculate duration
-        const fullTime = new Date().valueOf() - startTime;
-        logger.info(`duration: ${fullTime} ms`);
-        logger.info(`count: ${counters.count}`);
-        logger.info(`wait: ${Math.round(counters.wait)} (${Math.round((counters.wait / counters.total) * 100)}%)`);
-        logger.info(`dns: ${Math.round(counters.dns)} (${Math.round((counters.dns / counters.total) * 100)}%)`);
-        logger.info(`tcp: ${Math.round(counters.tcp)} (${Math.round((counters.tcp / counters.total) * 100)}%)`);
-        logger.info(`firstByte: ${Math.round(counters.firstByte)} (${Math.round((counters.firstByte / counters.total) * 100)}%)`);
-        logger.info(`download: ${Math.round(counters.download)} (${Math.round((counters.download / counters.total) * 100)}%)`);
     }
     catch (error) {
         logger.error(`Error during startup...`);
