@@ -14,6 +14,12 @@ namespace blob_cacher_dotnet_test
     class Program
     {
 
+        public class RandomData
+        {
+            public string id;
+            public string data;
+        }
+
         public class Options
         {
             [Option('z', "file-size", Required = false, HelpText = "FILE_SIZE. The file to be used for testing will be roughly this size in kilobytes. Default is \"100\" kb.")]
@@ -57,7 +63,6 @@ namespace blob_cacher_dotnet_test
 
                     // variables
                     Faker faker = new Faker();
-                    List<Task> tasks = new List<Task>();
                     int FILE_SIZE = Program.GetIntValue(o.FileSize, "FILE_SIZE", 100);
                     int FILE_COUNT = Program.GetIntValue(o.FileCount, "FILE_COUNT", 100);
                     string CONNECTION_STRING = Program.GetStringValue(o.ConnectionString, "CONNECTION_STRING", "");
@@ -86,20 +91,26 @@ namespace blob_cacher_dotnet_test
                         client.DefaultRequestOptions.SingleBlobUploadThresholdInBytes = 4 * 1024 * 1024;
                         CloudBlobContainer container = client.GetContainerReference(STORAGE_CONTAINER);
 
+                        // generate random data
+                        RandomData[] files = new RandomData[FILE_COUNT];
+                        for (int i = 0; i < FILE_COUNT; i++)
+                        {
+                            files[i] = new RandomData()
+                            {
+                                id = Guid.NewGuid().ToString(),
+                                data = string.Join(' ', faker.Lorem.Words(150 * FILE_SIZE))
+                            };
+                        }
+
                         // run all at the same time
+                        List<Task> tasks = new List<Task>();
                         Stopwatch watch = Stopwatch.StartNew();
                         for (int i = 0; i < FILE_COUNT; i++)
                         {
-
-                            // generate random data
-                            string id = Guid.NewGuid().ToString();
-                            string data = string.Join(' ', faker.Lorem.Words(150 * FILE_SIZE));
-
-                            // start uploading all threads at the same time
-                            CloudBlockBlob blob = container.GetBlockBlobReference(id);
-                            Task task = blob.UploadTextAsync(data);
+                            RandomData file = files[i];
+                            CloudBlockBlob blob = container.GetBlockBlobReference(file.id);
+                            Task task = blob.UploadTextAsync(file.data);
                             tasks.Add(task);
-
                         }
 
                         // report on the time it took
