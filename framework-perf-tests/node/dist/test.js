@@ -8,7 +8,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 // includes
-const agentkeepalive = require('agentkeepalive').HttpsAgent;
+const agentkeepalive = require('agentkeepalive');
 const cmd = require("commander");
 const crypto = require("crypto");
 const dotenv = require("dotenv");
@@ -22,10 +22,11 @@ const request = __importStar(require("request"));
 dotenv.config();
 // define options
 cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, warn, info, verbose, debug, silly). Defaults to "info".', /^(error|warn|info|verbose|debug|silly)$/i)
-    .option('-a, --account <s>', '[REQUIRED] STORAGE_ACCOUNT. The name of the storage account.')
-    .option('-c, --container <s>', '[REQUIRED] STORAGE_CONTAINER. The name of the storage container.')
-    .option('-k, --key <s>', '[REQUIRED*] STORAGE_KEY. The key for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS.')
-    .option('-s, --sas <s>', '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS.')
+    .option('-a, --account <s>', '[REQUIRED*] STORAGE_ACCOUNT. The name of the storage account. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.')
+    .option('-c, --container <s>', '[REQUIRED*] STORAGE_CONTAINER. The name of the storage container. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.')
+    .option('-u, --url <s>', '[REQUIRED*] URL. Specify an arbitrary URL instead of doing a PUT to the blob services account. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.')
+    .option('-k, --key <s>', '[REQUIRED*] STORAGE_KEY. The key for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.')
+    .option('-s, --sas <s>', '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.')
     .option('-z, --file-size <i>', 'FILE_SIZE. The file to be used for testing will be roughly this size in kilobytes. Default is "100" kb.', parseInt)
     .option('-n, --file-count <i>', 'FILE_COUNT. The number of files to create (simultaneous). Default is "100".', parseInt)
     .option('-m, --max-sockets <i>', 'MAX_SOCKETS. The total number of simultaneous outbound connections. Default is "1000".', parseInt)
@@ -34,6 +35,7 @@ cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, w
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const STORAGE_ACCOUNT = cmd.account || process.env.STORAGE_ACCOUNT;
 const STORAGE_CONTAINER = cmd.container || process.env.STORAGE_CONTAINER;
+const URL = cmd.url || process.env.URL;
 const STORAGE_KEY = cmd.key || process.env.STORAGE_KEY;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const FILE_SIZE = cmd.fileSize || process.env.FILE_SIZE || 100;
@@ -49,8 +51,12 @@ const counters = {
     download: 0,
     total: 0
 };
-// agent
-const agent = new agentkeepalive({
+// agents
+const httpagent = new agentkeepalive({
+    keepAlive: true,
+    maxSockets: MAX_SOCKETS
+});
+const httpsagent = new agentkeepalive.HttpsAgent.HttpsAgent({
     keepAlive: true,
     maxSockets: MAX_SOCKETS
 });
@@ -112,9 +118,14 @@ function generateSignature(method, path, options) {
 // function to create a blob with a single blob
 function createBlob(filename, content) {
     return new Promise((resolve, reject) => {
+        // determine the url
+        const url = URL ||
+            `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${STORAGE_SAS ? STORAGE_SAS + '&' : '?'}`;
         // specify the request options, including the headers
         const options = {
-            agent,
+            agent: url.toLowerCase().startsWith('https://')
+                ? httpsagent
+                : httpagent,
             body: content,
             headers: {
                 'x-ms-blob-type': 'BlockBlob',
@@ -123,10 +134,10 @@ function createBlob(filename, content) {
             },
             lookup: lookup_dns_cache_1.lookup,
             time: true,
-            url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${STORAGE_SAS ? STORAGE_SAS + '&' : '?'}`
+            url
         };
         // generate and apply the signature
-        if (!STORAGE_SAS && STORAGE_KEY) {
+        if (!URL && !STORAGE_SAS && STORAGE_KEY) {
             const signature = generateSignature('PUT', filename, options);
             options.headers.Authorization = signature;
         }
@@ -170,14 +181,25 @@ async function startup() {
         console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
         logger.info(`STORAGE_ACCOUNT is "${STORAGE_ACCOUNT}".`);
         logger.info(`STORAGE_CONTAINER is "${STORAGE_CONTAINER}".`);
+        logger.info(`URL is "${URL}".`);
         logger.info(`STORAGE_KEY is "${STORAGE_KEY ? 'defined' : 'undefined'}"`);
         logger.info(`STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`);
         logger.info(`FILE_SIZE is "${FILE_SIZE}" kb.`);
         logger.info(`FILE_COUNT is "${FILE_COUNT}".`);
         logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
         // validate
-        if (!STORAGE_KEY && !STORAGE_SAS) {
-            logger.error('You must specify either STORAGE_KEY or STORAGE_SAS.');
+        if ((STORAGE_ACCOUNT && STORAGE_CONTAINER) || URL) {
+            // ok
+        }
+        else {
+            logger.error('You must specify both STORAGE_ACCOUNT and STORAGE_CONTAINER unless using URL.');
+            process.exit(1);
+        }
+        if (STORAGE_KEY || STORAGE_SAS || URL) {
+            // ok
+        }
+        else {
+            logger.error('You must specify either STORAGE_KEY or STORAGE_SAS unless using URL.');
             process.exit(1);
         }
         // create random data
@@ -194,7 +216,8 @@ async function startup() {
         for (let i = 0; i < FILE_COUNT; i++) {
             const o = files[i];
             const promise = createBlob(o.id, o.data).catch(error => {
-                logger.error(error);
+                logger.error(`Error during createBlob...`);
+                logger.error(error.message);
             });
             promises.push(promise);
         }

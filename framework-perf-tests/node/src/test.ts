@@ -1,5 +1,5 @@
 // includes
-const agentkeepalive = require('agentkeepalive').HttpsAgent;
+const agentkeepalive = require('agentkeepalive');
 import cmd = require('commander');
 import crypto = require('crypto');
 import dotenv = require('dotenv');
@@ -21,19 +21,23 @@ cmd.option(
 )
     .option(
         '-a, --account <s>',
-        '[REQUIRED] STORAGE_ACCOUNT. The name of the storage account.'
+        '[REQUIRED*] STORAGE_ACCOUNT. The name of the storage account. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.'
     )
     .option(
         '-c, --container <s>',
-        '[REQUIRED] STORAGE_CONTAINER. The name of the storage container.'
+        '[REQUIRED*] STORAGE_CONTAINER. The name of the storage container. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.'
+    )
+    .option(
+        '-u, --url <s>',
+        '[REQUIRED*] URL. Specify an arbitrary URL instead of doing a PUT to the blob services account. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.'
     )
     .option(
         '-k, --key <s>',
-        '[REQUIRED*] STORAGE_KEY. The key for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS.'
+        '[REQUIRED*] STORAGE_KEY. The key for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.'
     )
     .option(
         '-s, --sas <s>',
-        '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS.'
+        '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.'
     )
     .option(
         '-z, --file-size <i>',
@@ -56,6 +60,7 @@ cmd.option(
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const STORAGE_ACCOUNT = cmd.account || process.env.STORAGE_ACCOUNT;
 const STORAGE_CONTAINER = cmd.container || process.env.STORAGE_CONTAINER;
+const URL = cmd.url || process.env.URL;
 const STORAGE_KEY = cmd.key || process.env.STORAGE_KEY;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const FILE_SIZE = cmd.fileSize || process.env.FILE_SIZE || 100;
@@ -73,8 +78,12 @@ const counters = {
     total: 0
 };
 
-// agent
-const agent = new agentkeepalive({
+// agents
+const httpagent = new agentkeepalive({
+    keepAlive: true,
+    maxSockets: MAX_SOCKETS
+});
+const httpsagent = new agentkeepalive.HttpsAgent.HttpsAgent({
     keepAlive: true,
     maxSockets: MAX_SOCKETS
 });
@@ -156,9 +165,18 @@ function generateSignature(method: string, path: string, options: any) {
 // function to create a blob with a single blob
 function createBlob(filename: string, content: string) {
     return new Promise((resolve, reject) => {
+        // determine the url
+        const url: string =
+            URL ||
+            `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${
+                STORAGE_SAS ? STORAGE_SAS + '&' : '?'
+            }`;
+
         // specify the request options, including the headers
         const options = {
-            agent,
+            agent: url.toLowerCase().startsWith('https://')
+                ? httpsagent
+                : httpagent,
             body: content,
             headers: {
                 'x-ms-blob-type': 'BlockBlob',
@@ -167,13 +185,11 @@ function createBlob(filename: string, content: string) {
             } as any,
             lookup,
             time: true,
-            url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${
-                STORAGE_SAS ? STORAGE_SAS + '&' : '?'
-            }`
+            url
         };
 
         // generate and apply the signature
-        if (!STORAGE_SAS && STORAGE_KEY) {
+        if (!URL && !STORAGE_SAS && STORAGE_KEY) {
             const signature = generateSignature('PUT', filename, options);
             options.headers.Authorization = signature;
         }
@@ -224,6 +240,7 @@ async function startup() {
         console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
         logger.info(`STORAGE_ACCOUNT is "${STORAGE_ACCOUNT}".`);
         logger.info(`STORAGE_CONTAINER is "${STORAGE_CONTAINER}".`);
+        logger.info(`URL is "${URL}".`);
         logger.info(
             `STORAGE_KEY is "${STORAGE_KEY ? 'defined' : 'undefined'}"`
         );
@@ -235,8 +252,20 @@ async function startup() {
         logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
 
         // validate
-        if (!STORAGE_KEY && !STORAGE_SAS) {
-            logger.error('You must specify either STORAGE_KEY or STORAGE_SAS.');
+        if ((STORAGE_ACCOUNT && STORAGE_CONTAINER) || URL) {
+            // ok
+        } else {
+            logger.error(
+                'You must specify both STORAGE_ACCOUNT and STORAGE_CONTAINER unless using URL.'
+            );
+            process.exit(1);
+        }
+        if (STORAGE_KEY || STORAGE_SAS || URL) {
+            // ok
+        } else {
+            logger.error(
+                'You must specify either STORAGE_KEY or STORAGE_SAS unless using URL.'
+            );
             process.exit(1);
         }
 
@@ -256,7 +285,8 @@ async function startup() {
         for (let i = 0; i < FILE_COUNT; i++) {
             const o = files[i];
             const promise = createBlob(o.id, o.data).catch(error => {
-                logger.error(error);
+                logger.error(`Error during createBlob...`);
+                logger.error(error.message);
             });
             promises.push(promise);
         }
