@@ -1,3 +1,4 @@
 **/*.env
 **/dotnet/bin
 **/dotnet/obj
+**/node_modules
