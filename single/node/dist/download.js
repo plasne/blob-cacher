@@ -23,6 +23,7 @@ dotenv.config();
 cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, warn, info, verbose, debug, silly). Defaults to "info".', /^(error|warn|info|verbose|debug|silly)$/i)
     .option('-u, --url <s>', '[REQUIRED*] URL. Specify the URL of the file to retrieve.')
     .option('-s, --sas <s>', '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.')
+    .option('-n, --concurrency <i>', 'CONCURRENCY. The number of simultaneous reads. Default is "1".', parseInt)
     .option('-m, --max-sockets <i>', 'MAX_SOCKETS. The total number of simultaneous outbound connections (per process). Default is "1000".', parseInt)
     .option('-p, --processes <i>', 'PROCESSES. The number of processes that the work should be divided between. Default is "1".', parseInt)
     .parse(process.argv);
@@ -30,6 +31,7 @@ cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, w
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const URL = cmd.url || process.env.URL;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
+const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 1;
 const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
 const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
 // agents
@@ -107,9 +109,9 @@ function readChunk(index, size) {
 // function to read a single blob
 async function readBlob() {
     const max = 83886080;
-    const segment = Math.ceil(max / MAX_SOCKETS);
+    const segment = Math.ceil(max / CONCURRENCY);
     const promises = [];
-    for (let i = 0; i < MAX_SOCKETS; i++) {
+    for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
         promises.push(promise);
     }
@@ -130,6 +132,7 @@ async function startup() {
         console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
         logger.info(`URL is "${URL}".`);
         logger.info(`STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`);
+        logger.info(`CONCURRENCY is "${CONCURRENCY}".`);
         logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
         logger.info(`PROCESSES is "${PROCESSES}".`);
         // validate
