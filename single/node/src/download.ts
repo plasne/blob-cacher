@@ -5,6 +5,7 @@ import dotenv = require('dotenv');
 import { lookup } from 'lookup-dns-cache';
 import * as winston from 'winston';
 import * as request from 'request';
+import * as fs from 'fs';
 
 // set env
 dotenv.config();
@@ -83,33 +84,38 @@ function readBlob() {
         };
 
         // execute
-        request.get(options, (error, response) => {
-            if (
-                !error &&
-                response.statusCode >= 200 &&
-                response.statusCode < 300
-            ) {
-                if (response.timingPhases) {
-                    logger.info(`wait: ${response.timingPhases.wait}`);
-                    logger.info(`dns: ${response.timingPhases.dns}`);
-                    logger.info(`tcp: ${response.timingPhases.tcp}`);
-                    logger.info(
-                        `firstByte: ${response.timingPhases.firstByte}`
+        const file = fs.createWriteStream('./output.file');
+        request
+            .get(options, (error, response) => {
+                if (
+                    !error &&
+                    response.statusCode >= 200 &&
+                    response.statusCode < 300
+                ) {
+                    if (response.timingPhases) {
+                        logger.info(`wait: ${response.timingPhases.wait}`);
+                        logger.info(`dns: ${response.timingPhases.dns}`);
+                        logger.info(`tcp: ${response.timingPhases.tcp}`);
+                        logger.info(
+                            `firstByte: ${response.timingPhases.firstByte}`
+                        );
+                        logger.info(
+                            `download: ${response.timingPhases.download}`
+                        );
+                        logger.info(`total: ${response.timingPhases.total}`);
+                    }
+                    resolve();
+                } else if (error) {
+                    reject(error);
+                } else {
+                    reject(
+                        new Error(
+                            `${response.statusCode}: ${response.statusMessage}`
+                        )
                     );
-                    logger.info(`download: ${response.timingPhases.download}`);
-                    logger.info(`total: ${response.timingPhases.total}`);
                 }
-                resolve();
-            } else if (error) {
-                reject(error);
-            } else {
-                reject(
-                    new Error(
-                        `${response.statusCode}: ${response.statusMessage}`
-                    )
-                );
-            }
-        });
+            })
+            .pipe(file);
     });
 }
 

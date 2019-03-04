@@ -14,6 +14,7 @@ const dotenv = require("dotenv");
 const lookup_dns_cache_1 = require("lookup-dns-cache");
 const winston = __importStar(require("winston"));
 const request = __importStar(require("request"));
+const fs = __importStar(require("fs"));
 // set env
 dotenv.config();
 // define options
@@ -67,7 +68,9 @@ function readBlob() {
             url
         };
         // execute
-        request.get(options, (error, response) => {
+        const file = fs.createWriteStream('./output.file');
+        request
+            .get(options, (error, response) => {
             if (!error &&
                 response.statusCode >= 200 &&
                 response.statusCode < 300) {
@@ -87,7 +90,8 @@ function readBlob() {
             else {
                 reject(new Error(`${response.statusCode}: ${response.statusMessage}`));
             }
-        });
+        })
+            .pipe(file);
     });
 }
 // startup function
