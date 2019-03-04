@@ -6,6 +6,8 @@ import { lookup } from 'lookup-dns-cache';
 import * as winston from 'winston';
 import * as request from 'request';
 import * as fs from 'fs';
+import MultiStream = require('multistream');
+import MemoryStream = require('memorystream');
 
 // set env
 dotenv.config();
@@ -24,17 +26,29 @@ cmd.option(
         '-s, --sas <s>',
         '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.'
     )
+    .option(
+        '-m, --max-sockets <i>',
+        'MAX_SOCKETS. The total number of simultaneous outbound connections (per process). Default is "1000".',
+        parseInt
+    )
+    .option(
+        '-p, --processes <i>',
+        'PROCESSES. The number of processes that the work should be divided between. Default is "1".',
+        parseInt
+    )
     .parse(process.argv);
 
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const URL = cmd.url || process.env.URL;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
+const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
+const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
 
 // agents
 const httpsagent = new agentkeepalive.HttpsAgent({
     keepAlive: true,
-    maxSockets: 10
+    maxSockets: MAX_SOCKETS
 });
 
 // start logging
@@ -65,9 +79,17 @@ const logger = winston.createLogger({
     transports: [transport]
 });
 
-// function to read a single blob
-function readBlob() {
-    return new Promise((resolve, reject) => {
+interface chunk {
+    index: number;
+    stream: MemoryStream;
+}
+
+function readChunk(index: number, size: number) {
+    return new Promise<chunk>((resolve, reject) => {
+        const chunkStart = index * size;
+        const chunkStop = (index + 1) * size - 1;
+        logger.verbose(`getting ${chunkStart} to ${chunkStop}...`);
+
         // determine the url
         const url: string = `${URL}${STORAGE_SAS}`;
 
@@ -76,7 +98,8 @@ function readBlob() {
             agent: httpsagent,
             headers: {
                 'x-ms-date': new Date().toUTCString(),
-                'x-ms-version': '2017-07-29'
+                'x-ms-version': '2017-07-29',
+                'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
             } as any,
             lookup,
             time: true,
@@ -84,7 +107,7 @@ function readBlob() {
         };
 
         // execute
-        const file = fs.createWriteStream('./output.file');
+        const stream = new MemoryStream();
         request
             .get(options, (error, response) => {
                 if (
@@ -92,6 +115,7 @@ function readBlob() {
                     response.statusCode >= 200 &&
                     response.statusCode < 300
                 ) {
+                    logger.info(`response: ${response.statusCode}`);
                     if (response.timingPhases) {
                         logger.info(`wait: ${response.timingPhases.wait}`);
                         logger.info(`dns: ${response.timingPhases.dns}`);
@@ -104,7 +128,7 @@ function readBlob() {
                         );
                         logger.info(`total: ${response.timingPhases.total}`);
                     }
-                    resolve();
+                    resolve({ index, stream });
                 } else if (error) {
                     reject(error);
                 } else {
@@ -115,7 +139,29 @@ function readBlob() {
                     );
                 }
             })
-            .pipe(file);
+            .pipe(stream);
+    });
+}
+
+// function to read a single blob
+async function readBlob() {
+    const max = 83886080;
+    const segment = Math.ceil(max / MAX_SOCKETS);
+
+    const promises: Promise<chunk>[] = [];
+    for (let i = 0; i < MAX_SOCKETS; i++) {
+        const promise = readChunk(i, segment);
+        promises.push(promise);
+    }
+
+    await Promise.all(promises).then(async values => {
+        const file = fs.createWriteStream('./output.file');
+        values.sort((a, b) => a.index - b.index);
+        const streams: request.Request[] = [];
+        for (const value of values) {
+            streams.push(value.stream);
+        }
+        MultiStream(streams).pipe(file);
     });
 }
 
@@ -128,6 +174,8 @@ async function startup() {
         logger.info(
             `STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`
         );
+        logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
+        logger.info(`PROCESSES is "${PROCESSES}".`);
 
         // validate
         if (URL && STORAGE_SAS) {
