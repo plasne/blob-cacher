@@ -110,12 +110,15 @@ function readChunk(index, size) {
 async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
+    const startTime = new Date().valueOf();
     const promises = [];
     for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
         promises.push(promise);
     }
     await Promise.all(promises).then(async (values) => {
+        const duration = new Date().valueOf() - startTime;
+        logger.info(`downloaded in ${duration} ms.`);
         const file = fs.createWriteStream('./output.file');
         values.sort((a, b) => a.index - b.index);
         const streams = [];
@@ -123,6 +126,8 @@ async function readBlob() {
             streams.push(value.stream);
         }
         MultiStream(streams).pipe(file);
+        const duration2 = new Date().valueOf() - startTime;
+        logger.info(`written after ${duration2} ms.`);
     });
 }
 // startup function
@@ -144,10 +149,7 @@ async function startup() {
             process.exit(1);
         }
         // read the blob
-        const startTime = new Date().valueOf();
         await readBlob();
-        const duration = new Date().valueOf() - startTime;
-        logger.info(`downloaded in ${duration} ms.`);
     }
     catch (error) {
         logger.error(`Error during startup...`);
