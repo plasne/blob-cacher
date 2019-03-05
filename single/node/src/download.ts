@@ -1,13 +1,15 @@
 // includes
-import agentkeepalive = require('agentkeepalive');
+//import agentkeepalive = require('agentkeepalive');
 import cmd = require('commander');
 import dotenv = require('dotenv');
-import { lookup } from 'lookup-dns-cache';
+// import { lookup } from 'lookup-dns-cache';
 import * as winston from 'winston';
-import * as request from 'request';
+// import * as request from 'request';
 import * as fs from 'fs';
 import MultiStream = require('multistream');
-import MemoryStream = require('memorystream');
+// import MemoryStream = require('memorystream');
+import { performance, PerformanceObserver } from 'perf_hooks';
+import axios from 'axios';
 
 // set env
 dotenv.config();
@@ -52,10 +54,12 @@ const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
 const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
 
 // agents
+/*
 const httpsagent = new agentkeepalive.HttpsAgent({
     keepAlive: true,
     maxSockets: MAX_SOCKETS
 });
+*/
 
 // start logging
 const logColors: {
@@ -85,6 +89,7 @@ const logger = winston.createLogger({
     transports: [transport]
 });
 
+/*
 interface chunk {
     index: number;
     stream: MemoryStream;
@@ -114,6 +119,7 @@ function readChunk(index: number, size: number) {
 
         // execute
         const stream = new MemoryStream();
+        performance.mark('start-request');
         request
             .get(options, (error, response) => {
                 if (
@@ -134,6 +140,7 @@ function readChunk(index: number, size: number) {
                         );
                         logger.info(`total: ${response.timingPhases.total}`);
                     }
+                    performance.mark('complete-request');
                     resolve({ index, stream });
                 } else if (error) {
                     reject(error);
@@ -148,34 +155,54 @@ function readChunk(index: number, size: number) {
             .pipe(stream);
     });
 }
+*/
+function readChunk(index: number, size: number) {
+    const chunkStart = index * size;
+    const chunkStop = (index + 1) * size - 1;
+    logger.verbose(`getting ${chunkStart} to ${chunkStop}...`);
+
+    performance.mark('start-request');
+    return axios({
+        method: 'get',
+        url: `${URL}${STORAGE_SAS}`,
+        responseType: 'stream',
+        headers: {
+            'x-ms-date': new Date().toUTCString(),
+            'x-ms-version': '2017-07-29',
+            'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
+        },
+        maxContentLength: 90886080
+    }).then(data => {
+        performance.mark('complete-request');
+        return data;
+    });
+}
 
 // function to read a single blob
 async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
 
-    const startTime = new Date().valueOf();
-
-    const promises: Promise<chunk>[] = [];
+    const promises: Promise<any>[] = [];
     for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
         promises.push(promise);
     }
 
     await Promise.all(promises).then(async values => {
-        const duration = new Date().valueOf() - startTime;
-        logger.info(`downloaded in ${duration} ms.`);
-
+        performance.mark('start-write');
         const file = fs.createWriteStream('./output.file');
         values.sort((a, b) => a.index - b.index);
-        const streams: request.Request[] = [];
+        //const streams: request.Request[] = [];
+        const streams: any[] = [];
         for (const value of values) {
-            streams.push(value.stream);
+            streams.push(value.data);
         }
         MultiStream(streams).pipe(file);
-
-        const duration2 = new Date().valueOf() - startTime;
-        logger.info(`written after ${duration2} ms.`);
+        file.on('close', () => {
+            performance.mark('complete-write');
+            performance.measure('write time', 'start-write', 'complete-write');
+        });
     });
 }
 
@@ -202,6 +229,16 @@ async function startup() {
 
         // read the blob
         await readBlob();
+        const obs = new PerformanceObserver(list => {
+            console.log(list.getEntries());
+        });
+        obs.observe({ entryTypes: ['measure'], buffered: true });
+
+        performance.measure(
+            'request time',
+            'start-request',
+            'complete-request'
+        );
     } catch (error) {
         logger.error(`Error during startup...`);
         logger.error(error.message);
