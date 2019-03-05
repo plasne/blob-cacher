@@ -1,6 +1,7 @@
 // NOTES:
-// 1. I tested axios responseType="arraybuffer" but it was tragically slow
-// 2. I tested waiting until all streams were available and then used multistream but it was the same speed as concurrency=1
+// * I tested axios responseType="arraybuffer" but it was tragically slow
+// * I tested waiting until all streams were available and then used multistream but it was the same speed as concurrency=1
+// * I tested multiple fs.write() threads in a sparse file instead of streams, this was a bit faster but isn't supported on Windows
 
 // includes
 import cmd = require('commander');
@@ -32,14 +33,26 @@ cmd.option(
         'CONCURRENCY. The number of simultaneous reads. Default is "1".',
         parseInt
     )
+    .option(
+        '--source-method <s>',
+        'SOURCE_METHOD. If "url" then only the URL is used. If "round-robin" then URL plus any URL_# environment variables are used. Defaults to "url".'
+    )
     .parse(process.argv);
 
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const URL = cmd.url || process.env.URL;
-const URL2 = 'https://pelasnehtbb.blob.core.windows.net/sized/large.copy';
+const listOfUrls: string[] = [];
+if (URL) listOfUrls.push(URL);
+for (let i = 0; i < 99; i++) {
+    const alt = process.env[`URL_${i}`];
+    if (alt) listOfUrls.push(alt);
+}
+let urlIndex = 0;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 1;
+let SOURCE_METHOD = cmd.sourceMethod || process.env.SOURCE_METHOD;
+if (!['url', 'round-robin'].includes(SOURCE_METHOD)) SOURCE_METHOD = 'url';
 
 // start logging
 const logColors: {
@@ -73,13 +86,26 @@ const logger = winston.createLogger({
 async function readChunk(index: number, size: number) {
     const chunkStart = index * size;
     const chunkStop = (index + 1) * size - 1;
+
+    // determine the appropriate URL
     const url: string =
-        chunkStart === 0 ? `${URL}${STORAGE_SAS}` : `${URL2}${STORAGE_SAS}`;
+        (() => {
+            switch (SOURCE_METHOD) {
+                case 'url':
+                    return URL;
+                case 'round-robin':
+                    if (urlIndex > listOfUrls.length - 1) urlIndex = 0;
+                    const use = listOfUrls[urlIndex];
+                    urlIndex++;
+                    return use;
+            }
+        })() + STORAGE_SAS;
     logger.info(
         `getting [${index}] ${chunkStart} to ${chunkStop} from ${url} @ ${performance.now()}...`
     );
     performance.mark(`read-${index}:started`);
 
+    // get the chunk
     return axios({
         method: 'get',
         url,
@@ -95,24 +121,6 @@ async function readChunk(index: number, size: number) {
         logger.verbose(
             `first byte received [${index}] @ ${performance.now()}...`
         );
-
-        // write the stream to a buffer
-        //  fd.write is used for
-        /*
-        return new Promise<Buffer>(resolve => {
-            const buffers: any[] = [];
-            response.data.on('data', (d: any) => buffers.push(d));
-            response.data.on('end', () => {
-                performance.mark(`read-${index}:downloaded`);
-                logger.info(
-                    `all data received [${index}] @ ${performance.now()}.`
-                );
-                const buffer = Buffer.concat(buffers);
-                resolve(buffer);
-            });
-        });
-        */
-
         return response.data;
     });
 }
@@ -129,7 +137,7 @@ async function writeChunk(file: fs.WriteStream, stream: any) {
     });
 }
 
-async function readBlob2() {
+async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
 
@@ -147,90 +155,6 @@ async function readBlob2() {
     });
 }
 
-// function to read a single blob
-/*
-async function readBlob() {
-    const max = 83886080;
-    const segment = Math.ceil(max / CONCURRENCY);
-
-    return new Promise(resolve => {
-        fs.open('./output.file', 'w', (err, fd) => {
-            if (!err) {
-                let closed = 0;
-                for (let i = 0; i < CONCURRENCY; i++) {
-                    const chunkStart = i * segment;
-                    readChunk(i, segment).then(buffer => {
-                        logger.verbose('read');
-                        logger.verbose(
-                            `start write @ ${chunkStart} for ${buffer.length}`
-                        );
-                        fs.write(
-                            fd,
-                            buffer,
-                            0,
-                            buffer.length,
-                            chunkStart,
-                            err => {
-                                if (!err) {
-                                    closed++;
-                                    logger.verbose('closed');
-                                    if (closed >= CONCURRENCY) {
-                                        fs.close(fd, () => {
-                                            logger.verbose('all closed');
-                                            resolve();
-                                        });
-                                    }
-                                } else {
-                                    logger.error(`couldn't write to file...`);
-                                    logger.error(err);
-                                }
-                            }
-                        );
-                    });
-                }
-            } else {
-                logger.error(`couldn't open file...`);
-                logger.error(err);
-            }
-        });
-    });
-
-    const promises: Promise<any>[] = [];
-    for (let i = 0; i < CONCURRENCY; i++) {
-        const promise = readChunk(i, segment);
-        promises.push(promise);
-    }
-
-    await Promise.all(promises).then(async values => {
-        return new Promise(resolve => {
-            for (let i = 0; i < CONCURRENCY; i++) {
-                values[i].on('end', () => {
-                    performance.mark(`read-${i}:downloaded`);
-                    performance.measure(
-                        `1. download time [${i}]`,
-                        `read-${i}:started`,
-                        `read-${i}:downloaded`
-                    );
-                    logger.info(`downloaded [${i}] @ ${performance.now()}.`);
-                });
-            }
-            performance.mark('start-write');
-            const file = fs.createWriteStream('./output.file');
-            MultiStream(values).pipe(file);
-            file.on('close', () => {
-                performance.mark('complete-write');
-                performance.measure(
-                    '2. write time',
-                    'start-write',
-                    'complete-write'
-                );
-                resolve();
-            });
-        });
-    });
-}
-*/
-
 // startup function
 async function startup() {
     try {
@@ -241,6 +165,7 @@ async function startup() {
             `STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`
         );
         logger.info(`CONCURRENCY is "${CONCURRENCY}".`);
+        logger.info(`SOURCE_METHOD is "${SOURCE_METHOD}".`);
 
         // validate
         if (URL && STORAGE_SAS) {
@@ -265,7 +190,7 @@ async function startup() {
         // read the blob
         logger.verbose(`starting @ ${performance.now()}`);
         performance.mark('start-transfer');
-        await readBlob2();
+        await readBlob();
         performance.mark('complete-transfer');
         performance.measure(
             '3. total time',
