@@ -29,33 +29,14 @@ cmd.option(
         'CONCURRENCY. The number of simultaneous reads. Default is "1".',
         parseInt
     )
-    .option(
-        '-m, --max-sockets <i>',
-        'MAX_SOCKETS. The total number of simultaneous outbound connections (per process). Default is "1000".',
-        parseInt
-    )
-    .option(
-        '-p, --processes <i>',
-        'PROCESSES. The number of processes that the work should be divided between. Default is "1".',
-        parseInt
-    )
     .parse(process.argv);
 
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
 const URL = cmd.url || process.env.URL;
+const URL2 = 'https://pelasnehtbb.blob.core.windows.net/sized/large.copy';
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 1;
-const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
-const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
-
-// agents
-/*
-const httpsagent = new agentkeepalive.HttpsAgent({
-    keepAlive: true,
-    maxSockets: MAX_SOCKETS
-});
-*/
 
 // start logging
 const logColors: {
@@ -94,7 +75,8 @@ async function readChunk(index: number, size: number) {
     performance.mark('start-request');
     return axios({
         method: 'get',
-        url: `${URL}${STORAGE_SAS}`,
+        url:
+            chunkStart === 0 ? `${URL}${STORAGE_SAS}` : `${URL2}${STORAGE_SAS}`,
         responseType: 'stream',
         headers: {
             'x-ms-date': new Date().toUTCString(),
@@ -157,8 +139,6 @@ async function startup() {
             `STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`
         );
         logger.info(`CONCURRENCY is "${CONCURRENCY}".`);
-        logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
-        logger.info(`PROCESSES is "${PROCESSES}".`);
 
         // validate
         if (URL && STORAGE_SAS) {
