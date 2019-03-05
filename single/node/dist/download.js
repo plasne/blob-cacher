@@ -15,7 +15,7 @@ const cmd = require("commander");
 const dotenv = require("dotenv");
 const winston = __importStar(require("winston"));
 const fs = __importStar(require("fs"));
-const MultiStream = require("multistream");
+//import MultiStream = require('multistream');
 const perf_hooks_1 = require("perf_hooks");
 const axios_1 = __importDefault(require("axios"));
 // set env
@@ -62,7 +62,7 @@ async function readChunk(index, size) {
     return axios_1.default({
         method: 'get',
         url,
-        responseType: 'stream',
+        responseType: 'arraybuffer',
         headers: {
             'x-ms-date': new Date().toUTCString(),
             'x-ms-version': '2017-07-29',
@@ -79,30 +79,72 @@ async function readChunk(index, size) {
 async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
-    const promises = [];
+    fs.open('./output.file', 'w', (err, fd) => {
+        if (!err) {
+            let closed = 0;
+            for (let i = 0; i < CONCURRENCY; i++) {
+                const chunkStart = i * segment;
+                readChunk(i, segment).then(buffer => {
+                    logger.verbose('read');
+                    logger.verbose(`start write @ ${chunkStart} for ${buffer.length}`);
+                    fs.write(fd, buffer, 0, buffer.length, chunkStart, err => {
+                        if (!err) {
+                            closed++;
+                            logger.verbose('closed');
+                            if (closed >= CONCURRENCY) {
+                                fs.close(fd, () => {
+                                    logger.verbose('all closed');
+                                });
+                            }
+                        }
+                        else {
+                            logger.error(`couldn't write to file...`);
+                            logger.error(err);
+                        }
+                    });
+                });
+            }
+        }
+        else {
+            logger.error(`couldn't open file...`);
+            logger.error(err);
+        }
+    });
+    /*
+    const promises: Promise<any>[] = [];
     for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
         promises.push(promise);
     }
-    await Promise.all(promises).then(async (values) => {
+
+    await Promise.all(promises).then(async values => {
         return new Promise(resolve => {
             for (let i = 0; i < CONCURRENCY; i++) {
                 values[i].on('end', () => {
-                    perf_hooks_1.performance.mark(`read-${i}:downloaded`);
-                    perf_hooks_1.performance.measure(`1. download time [${i}]`, `read-${i}:started`, `read-${i}:downloaded`);
-                    logger.info(`downloaded [${i}] @ ${perf_hooks_1.performance.now()}.`);
+                    performance.mark(`read-${i}:downloaded`);
+                    performance.measure(
+                        `1. download time [${i}]`,
+                        `read-${i}:started`,
+                        `read-${i}:downloaded`
+                    );
+                    logger.info(`downloaded [${i}] @ ${performance.now()}.`);
                 });
             }
-            perf_hooks_1.performance.mark('start-write');
+            performance.mark('start-write');
             const file = fs.createWriteStream('./output.file');
             MultiStream(values).pipe(file);
             file.on('close', () => {
-                perf_hooks_1.performance.mark('complete-write');
-                perf_hooks_1.performance.measure('2. write time', 'start-write', 'complete-write');
+                performance.mark('complete-write');
+                performance.measure(
+                    '2. write time',
+                    'start-write',
+                    'complete-write'
+                );
                 resolve();
             });
         });
     });
+    */
 }
 // startup function
 async function startup() {

@@ -3,7 +3,7 @@ import cmd = require('commander');
 import dotenv = require('dotenv');
 import * as winston from 'winston';
 import * as fs from 'fs';
-import MultiStream = require('multistream');
+//import MultiStream = require('multistream');
 import { performance, PerformanceObserver } from 'perf_hooks';
 import axios from 'axios';
 
@@ -80,7 +80,7 @@ async function readChunk(index: number, size: number) {
     return axios({
         method: 'get',
         url,
-        responseType: 'stream',
+        responseType: 'arraybuffer',
         headers: {
             'x-ms-date': new Date().toUTCString(),
             'x-ms-version': '2017-07-29',
@@ -99,6 +99,39 @@ async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
 
+    fs.open('./output.file', 'w', (err, fd) => {
+        if (!err) {
+            let closed = 0;
+            for (let i = 0; i < CONCURRENCY; i++) {
+                const chunkStart = i * segment;
+                readChunk(i, segment).then(buffer => {
+                    logger.verbose('read');
+                    logger.verbose(
+                        `start write @ ${chunkStart} for ${buffer.length}`
+                    );
+                    fs.write(fd, buffer, 0, buffer.length, chunkStart, err => {
+                        if (!err) {
+                            closed++;
+                            logger.verbose('closed');
+                            if (closed >= CONCURRENCY) {
+                                fs.close(fd, () => {
+                                    logger.verbose('all closed');
+                                });
+                            }
+                        } else {
+                            logger.error(`couldn't write to file...`);
+                            logger.error(err);
+                        }
+                    });
+                });
+            }
+        } else {
+            logger.error(`couldn't open file...`);
+            logger.error(err);
+        }
+    });
+
+    /*
     const promises: Promise<any>[] = [];
     for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
@@ -132,6 +165,7 @@ async function readBlob() {
             });
         });
     });
+    */
 }
 
 // startup function
