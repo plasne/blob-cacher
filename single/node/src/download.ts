@@ -98,6 +98,7 @@ async function readChunk(index: number, size: number) {
 
         // write the stream to a buffer
         //  fd.write is used for
+        /*
         return new Promise<Buffer>(resolve => {
             const buffers: any[] = [];
             response.data.on('data', (d: any) => buffers.push(d));
@@ -110,12 +111,44 @@ async function readChunk(index: number, size: number) {
                 resolve(buffer);
             });
         });
+        */
 
-        //return response.data;
+        return response.data;
+    });
+}
+
+async function writeChunk(file: fs.WriteStream, stream: any) {
+    return new Promise(resolve => {
+        stream.pipe(
+            file,
+            { end: false }
+        );
+        stream.on('end', () => {
+            resolve();
+        });
+    });
+}
+
+async function readBlob2() {
+    const max = 83886080;
+    const segment = Math.ceil(max / CONCURRENCY);
+
+    const promises: any[] = [];
+    for (let i = 0; i < CONCURRENCY; i++) {
+        const promise = readChunk(i, segment);
+        promises.push(promise);
+    }
+
+    return Promise.all(promises).then(async streams => {
+        const file = fs.createWriteStream('./output.file');
+        for (const stream of streams) {
+            await writeChunk(file, stream);
+        }
     });
 }
 
 // function to read a single blob
+/*
 async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
@@ -162,7 +195,6 @@ async function readBlob() {
         });
     });
 
-    /*
     const promises: Promise<any>[] = [];
     for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
@@ -196,8 +228,8 @@ async function readBlob() {
             });
         });
     });
-    */
 }
+*/
 
 // startup function
 async function startup() {
@@ -233,7 +265,7 @@ async function startup() {
         // read the blob
         logger.verbose(`starting @ ${performance.now()}`);
         performance.mark('start-transfer');
-        await readBlob();
+        await readBlob2();
         performance.mark('complete-transfer');
         performance.measure(
             '3. total time',

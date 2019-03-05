@@ -76,23 +76,52 @@ async function readChunk(index, size) {
         logger.verbose(`first byte received [${index}] @ ${perf_hooks_1.performance.now()}...`);
         // write the stream to a buffer
         //  fd.write is used for
-        return new Promise(resolve => {
-            const buffers = [];
-            response.data.on('data', (d) => buffers.push(d));
+        /*
+        return new Promise<Buffer>(resolve => {
+            const buffers: any[] = [];
+            response.data.on('data', (d: any) => buffers.push(d));
             response.data.on('end', () => {
-                perf_hooks_1.performance.mark(`read-${index}:downloaded`);
-                logger.info(`all data received [${index}] @ ${perf_hooks_1.performance.now()}.`);
+                performance.mark(`read-${index}:downloaded`);
+                logger.info(
+                    `all data received [${index}] @ ${performance.now()}.`
+                );
                 const buffer = Buffer.concat(buffers);
                 resolve(buffer);
             });
         });
-        //return response.data;
+        */
+        return response.data;
+    });
+}
+async function writeChunk(file, stream) {
+    return new Promise(resolve => {
+        stream.pipe(file, { end: false });
+        stream.on('end', () => {
+            resolve();
+        });
+    });
+}
+async function readBlob2() {
+    const max = 83886080;
+    const segment = Math.ceil(max / CONCURRENCY);
+    const promises = [];
+    for (let i = 0; i < CONCURRENCY; i++) {
+        const promise = readChunk(i, segment);
+        promises.push(promise);
+    }
+    return Promise.all(promises).then(async (streams) => {
+        const file = fs.createWriteStream('./output.file');
+        for (const stream of streams) {
+            await writeChunk(file, stream);
+        }
     });
 }
 // function to read a single blob
+/*
 async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
+
     return new Promise(resolve => {
         fs.open('./output.file', 'w', (err, fd) => {
             if (!err) {
@@ -101,33 +130,40 @@ async function readBlob() {
                     const chunkStart = i * segment;
                     readChunk(i, segment).then(buffer => {
                         logger.verbose('read');
-                        logger.verbose(`start write @ ${chunkStart} for ${buffer.length}`);
-                        fs.write(fd, buffer, 0, buffer.length, chunkStart, err => {
-                            if (!err) {
-                                closed++;
-                                logger.verbose('closed');
-                                if (closed >= CONCURRENCY) {
-                                    fs.close(fd, () => {
-                                        logger.verbose('all closed');
-                                        resolve();
-                                    });
+                        logger.verbose(
+                            `start write @ ${chunkStart} for ${buffer.length}`
+                        );
+                        fs.write(
+                            fd,
+                            buffer,
+                            0,
+                            buffer.length,
+                            chunkStart,
+                            err => {
+                                if (!err) {
+                                    closed++;
+                                    logger.verbose('closed');
+                                    if (closed >= CONCURRENCY) {
+                                        fs.close(fd, () => {
+                                            logger.verbose('all closed');
+                                            resolve();
+                                        });
+                                    }
+                                } else {
+                                    logger.error(`couldn't write to file...`);
+                                    logger.error(err);
                                 }
                             }
-                            else {
-                                logger.error(`couldn't write to file...`);
-                                logger.error(err);
-                            }
-                        });
+                        );
                     });
                 }
-            }
-            else {
+            } else {
                 logger.error(`couldn't open file...`);
                 logger.error(err);
             }
         });
     });
-    /*
+
     const promises: Promise<any>[] = [];
     for (let i = 0; i < CONCURRENCY; i++) {
         const promise = readChunk(i, segment);
@@ -161,8 +197,8 @@ async function readBlob() {
             });
         });
     });
-    */
 }
+*/
 // startup function
 async function startup() {
     try {
@@ -191,7 +227,7 @@ async function startup() {
         // read the blob
         logger.verbose(`starting @ ${perf_hooks_1.performance.now()}`);
         perf_hooks_1.performance.mark('start-transfer');
-        await readBlob();
+        await readBlob2();
         perf_hooks_1.performance.mark('complete-transfer');
         perf_hooks_1.performance.measure('3. total time', 'start-transfer', 'complete-transfer');
     }
