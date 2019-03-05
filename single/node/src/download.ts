@@ -1,9 +1,12 @@
+// NOTES:
+// 1. I tested axios responseType="arraybuffer" but it was tragically slow
+// 2. I tested waiting until all streams were available and then used multistream but it was the same speed as concurrency=1
+
 // includes
 import cmd = require('commander');
 import dotenv = require('dotenv');
 import * as winston from 'winston';
 import * as fs from 'fs';
-//import MultiStream = require('multistream');
 import { performance, PerformanceObserver } from 'perf_hooks';
 import axios from 'axios';
 
@@ -89,15 +92,22 @@ async function readChunk(index: number, size: number) {
         maxContentLength: 90886080
     }).then(response => {
         performance.mark(`read-${index}:firstByte`);
-        logger.info(`first byte received [${index}] @ ${performance.now()}...`);
+        logger.verbose(
+            `first byte received [${index}] @ ${performance.now()}...`
+        );
 
+        // write the stream to a buffer
+        //  fd.write is used for
         return new Promise<Buffer>(resolve => {
-            var bufs: any[] = [];
-            response.data.on('data', (d: any) => bufs.push(d));
+            const buffers: any[] = [];
+            response.data.on('data', (d: any) => buffers.push(d));
             response.data.on('end', () => {
-                logger.verbose(`ended @ ${performance.now()}`);
-                const buf = Buffer.concat(bufs);
-                resolve(buf);
+                performance.mark(`read-${index}:downloaded`);
+                logger.info(
+                    `all data received [${index}] @ ${performance.now()}.`
+                );
+                const buffer = Buffer.concat(buffers);
+                resolve(buffer);
             });
         });
 
@@ -110,36 +120,46 @@ async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
 
-    fs.open('./output.file', 'w', (err, fd) => {
-        if (!err) {
-            let closed = 0;
-            for (let i = 0; i < CONCURRENCY; i++) {
-                const chunkStart = i * segment;
-                readChunk(i, segment).then(buffer => {
-                    logger.verbose('read');
-                    logger.verbose(
-                        `start write @ ${chunkStart} for ${buffer.length}`
-                    );
-                    fs.write(fd, buffer, 0, buffer.length, chunkStart, err => {
-                        if (!err) {
-                            closed++;
-                            logger.verbose('closed');
-                            if (closed >= CONCURRENCY) {
-                                fs.close(fd, () => {
-                                    logger.verbose('all closed');
-                                });
+    return new Promise(resolve => {
+        fs.open('./output.file', 'w', (err, fd) => {
+            if (!err) {
+                let closed = 0;
+                for (let i = 0; i < CONCURRENCY; i++) {
+                    const chunkStart = i * segment;
+                    readChunk(i, segment).then(buffer => {
+                        logger.verbose('read');
+                        logger.verbose(
+                            `start write @ ${chunkStart} for ${buffer.length}`
+                        );
+                        fs.write(
+                            fd,
+                            buffer,
+                            0,
+                            buffer.length,
+                            chunkStart,
+                            err => {
+                                if (!err) {
+                                    closed++;
+                                    logger.verbose('closed');
+                                    if (closed >= CONCURRENCY) {
+                                        fs.close(fd, () => {
+                                            logger.verbose('all closed');
+                                            resolve();
+                                        });
+                                    }
+                                } else {
+                                    logger.error(`couldn't write to file...`);
+                                    logger.error(err);
+                                }
                             }
-                        } else {
-                            logger.error(`couldn't write to file...`);
-                            logger.error(err);
-                        }
+                        );
                     });
-                });
+                }
+            } else {
+                logger.error(`couldn't open file...`);
+                logger.error(err);
             }
-        } else {
-            logger.error(`couldn't open file...`);
-            logger.error(err);
-        }
+        });
     });
 
     /*

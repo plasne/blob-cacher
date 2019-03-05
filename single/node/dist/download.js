@@ -1,4 +1,7 @@
 "use strict";
+// NOTES:
+// 1. I tested axios responseType="arraybuffer" but it was tragically slow
+// 2. I tested waiting until all streams were available and then used multistream but it was the same speed as concurrency=1
 var __importStar = (this && this.__importStar) || function (mod) {
     if (mod && mod.__esModule) return mod;
     var result = {};
@@ -15,7 +18,6 @@ const cmd = require("commander");
 const dotenv = require("dotenv");
 const winston = __importStar(require("winston"));
 const fs = __importStar(require("fs"));
-//import MultiStream = require('multistream');
 const perf_hooks_1 = require("perf_hooks");
 const axios_1 = __importDefault(require("axios"));
 // set env
@@ -71,14 +73,17 @@ async function readChunk(index, size) {
         maxContentLength: 90886080
     }).then(response => {
         perf_hooks_1.performance.mark(`read-${index}:firstByte`);
-        logger.info(`first byte received [${index}] @ ${perf_hooks_1.performance.now()}...`);
+        logger.verbose(`first byte received [${index}] @ ${perf_hooks_1.performance.now()}...`);
+        // write the stream to a buffer
+        //  fd.write is used for
         return new Promise(resolve => {
-            var bufs = [];
-            response.data.on('data', (d) => bufs.push(d));
+            const buffers = [];
+            response.data.on('data', (d) => buffers.push(d));
             response.data.on('end', () => {
-                logger.verbose(`ended @ ${perf_hooks_1.performance.now()}`);
-                const buf = Buffer.concat(bufs);
-                resolve(buf);
+                perf_hooks_1.performance.mark(`read-${index}:downloaded`);
+                logger.info(`all data received [${index}] @ ${perf_hooks_1.performance.now()}.`);
+                const buffer = Buffer.concat(buffers);
+                resolve(buffer);
             });
         });
         //return response.data;
@@ -88,36 +93,39 @@ async function readChunk(index, size) {
 async function readBlob() {
     const max = 83886080;
     const segment = Math.ceil(max / CONCURRENCY);
-    fs.open('./output.file', 'w', (err, fd) => {
-        if (!err) {
-            let closed = 0;
-            for (let i = 0; i < CONCURRENCY; i++) {
-                const chunkStart = i * segment;
-                readChunk(i, segment).then(buffer => {
-                    logger.verbose('read');
-                    logger.verbose(`start write @ ${chunkStart} for ${buffer.length}`);
-                    fs.write(fd, buffer, 0, buffer.length, chunkStart, err => {
-                        if (!err) {
-                            closed++;
-                            logger.verbose('closed');
-                            if (closed >= CONCURRENCY) {
-                                fs.close(fd, () => {
-                                    logger.verbose('all closed');
-                                });
+    return new Promise(resolve => {
+        fs.open('./output.file', 'w', (err, fd) => {
+            if (!err) {
+                let closed = 0;
+                for (let i = 0; i < CONCURRENCY; i++) {
+                    const chunkStart = i * segment;
+                    readChunk(i, segment).then(buffer => {
+                        logger.verbose('read');
+                        logger.verbose(`start write @ ${chunkStart} for ${buffer.length}`);
+                        fs.write(fd, buffer, 0, buffer.length, chunkStart, err => {
+                            if (!err) {
+                                closed++;
+                                logger.verbose('closed');
+                                if (closed >= CONCURRENCY) {
+                                    fs.close(fd, () => {
+                                        logger.verbose('all closed');
+                                        resolve();
+                                    });
+                                }
                             }
-                        }
-                        else {
-                            logger.error(`couldn't write to file...`);
-                            logger.error(err);
-                        }
+                            else {
+                                logger.error(`couldn't write to file...`);
+                                logger.error(err);
+                            }
+                        });
                     });
-                });
+                }
             }
-        }
-        else {
-            logger.error(`couldn't open file...`);
-            logger.error(err);
-        }
+            else {
+                logger.error(`couldn't open file...`);
+                logger.error(err);
+            }
+        });
     });
     /*
     const promises: Promise<any>[] = [];
