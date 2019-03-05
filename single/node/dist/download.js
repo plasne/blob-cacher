@@ -11,15 +11,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 // includes
-//import agentkeepalive = require('agentkeepalive');
 const cmd = require("commander");
 const dotenv = require("dotenv");
-// import { lookup } from 'lookup-dns-cache';
 const winston = __importStar(require("winston"));
-// import * as request from 'request';
 const fs = __importStar(require("fs"));
 const MultiStream = require("multistream");
-// import MemoryStream = require('memorystream');
 const perf_hooks_1 = require("perf_hooks");
 const axios_1 = __importDefault(require("axios"));
 // set env
@@ -66,74 +62,8 @@ const logger = winston.createLogger({
     level: LOG_LEVEL,
     transports: [transport]
 });
-/*
-interface chunk {
-    index: number;
-    stream: MemoryStream;
-}
-
-function readChunk(index: number, size: number) {
-    return new Promise<chunk>((resolve, reject) => {
-        const chunkStart = index * size;
-        const chunkStop = (index + 1) * size - 1;
-        logger.verbose(`getting ${chunkStart} to ${chunkStop}...`);
-
-        // determine the url
-        const url: string = `${URL}${STORAGE_SAS}`;
-
-        // specify the request options, including the headers
-        const options = {
-            agent: httpsagent,
-            headers: {
-                'x-ms-date': new Date().toUTCString(),
-                'x-ms-version': '2017-07-29',
-                'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
-            } as any,
-            lookup,
-            time: true,
-            url
-        };
-
-        // execute
-        const stream = new MemoryStream();
-        performance.mark('start-request');
-        request
-            .get(options, (error, response) => {
-                if (
-                    !error &&
-                    response.statusCode >= 200 &&
-                    response.statusCode < 300
-                ) {
-                    logger.info(`response: ${response.statusCode}`);
-                    if (response.timingPhases) {
-                        logger.info(`wait: ${response.timingPhases.wait}`);
-                        logger.info(`dns: ${response.timingPhases.dns}`);
-                        logger.info(`tcp: ${response.timingPhases.tcp}`);
-                        logger.info(
-                            `firstByte: ${response.timingPhases.firstByte}`
-                        );
-                        logger.info(
-                            `download: ${response.timingPhases.download}`
-                        );
-                        logger.info(`total: ${response.timingPhases.total}`);
-                    }
-                    performance.mark('complete-request');
-                    resolve({ index, stream });
-                } else if (error) {
-                    reject(error);
-                } else {
-                    reject(
-                        new Error(
-                            `${response.statusCode}: ${response.statusMessage}`
-                        )
-                    );
-                }
-            })
-            .pipe(stream);
-    });
-}
-*/
-function readChunk(index, size) {
+// read a chunk of data
+async function readChunk(index, size) {
     const chunkStart = index * size;
     const chunkStop = (index + 1) * size - 1;
     logger.verbose(`getting ${chunkStart} to ${chunkStop}...`);
@@ -150,6 +80,7 @@ function readChunk(index, size) {
         maxContentLength: 90886080
     }).then(data => {
         perf_hooks_1.performance.mark('complete-request');
+        perf_hooks_1.performance.measure('request time', 'start-request', 'complete-request');
         return data;
     });
 }
@@ -166,7 +97,6 @@ async function readBlob() {
         perf_hooks_1.performance.mark('start-write');
         const file = fs.createWriteStream('./output.file');
         values.sort((a, b) => a.index - b.index);
-        //const streams: request.Request[] = [];
         const streams = [];
         for (const value of values) {
             streams.push(value.data);
@@ -196,13 +126,15 @@ async function startup() {
             logger.error('You must specify both URL and STORAGE_SAS.');
             process.exit(1);
         }
-        // read the blob
-        await readBlob();
+        // observe measures
         const obs = new perf_hooks_1.PerformanceObserver(list => {
-            console.log(list.getEntries());
+            for (const entry of list.getEntries()) {
+                logger.verbose(`measure "${entry.name}": ${entry.duration}`);
+            }
         });
         obs.observe({ entryTypes: ['measure'], buffered: true });
-        perf_hooks_1.performance.measure('request time', 'start-request', 'complete-request');
+        // read the blob
+        await readBlob();
     }
     catch (error) {
         logger.error(`Error during startup...`);
