@@ -72,9 +72,11 @@ async function readChunk(index: number, size: number) {
     const chunkStop = (index + 1) * size - 1;
     const url: string =
         chunkStart === 0 ? `${URL}${STORAGE_SAS}` : `${URL2}${STORAGE_SAS}`;
-    logger.verbose(`getting ${chunkStart} to ${chunkStop} from ${url}...`);
+    logger.info(
+        `getting [${index}] ${chunkStart} to ${chunkStop} from ${url} @ ${performance.now()}...`
+    );
+    performance.mark(`read-${index}:started`);
 
-    performance.mark('start-request');
     return axios({
         method: 'get',
         url,
@@ -86,13 +88,8 @@ async function readChunk(index: number, size: number) {
         },
         maxContentLength: 90886080
     }).then(response => {
-        performance.mark('complete-request');
-        console.log(`req ${performance.now()}`);
-        performance.measure(
-            '1. request time',
-            'start-request',
-            'complete-request'
-        );
+        performance.mark(`read-${index}:firstByte`);
+        logger.info(`first byte received [${index}] @ ${performance.now()}...`);
         return response.data;
     });
 }
@@ -110,15 +107,17 @@ async function readBlob() {
 
     await Promise.all(promises).then(async values => {
         return new Promise(resolve => {
-            values[0].on('end', () => {
-                console.log(`end ${performance.now()}`);
-            });
-            values[0].on('close', () => {
-                console.log('close');
-            });
-            values[0].on('finish', () => {
-                console.log('finish');
-            });
+            for (let i = 0; i < CONCURRENCY; i++) {
+                values[i].on('end', () => {
+                    performance.mark(`read-${i}:downloaded`);
+                    performance.measure(
+                        `1. download time [${i}]`,
+                        `read-${i}:started`,
+                        `read-${i}:downloaded`
+                    );
+                    logger.info(`downloaded [${i}] @ ${performance.now()}.`);
+                });
+            }
             performance.mark('start-write');
             const file = fs.createWriteStream('./output.file');
             MultiStream(values).pipe(file);
