@@ -62,7 +62,7 @@ async function readChunk(index, size) {
     return axios_1.default({
         method: 'get',
         url,
-        responseType: 'arraybuffer',
+        responseType: 'stream',
         headers: {
             'x-ms-date': new Date().toUTCString(),
             'x-ms-version': '2017-07-29',
@@ -72,7 +72,16 @@ async function readChunk(index, size) {
     }).then(response => {
         perf_hooks_1.performance.mark(`read-${index}:firstByte`);
         logger.info(`first byte received [${index}] @ ${perf_hooks_1.performance.now()}...`);
-        return response.data;
+        return new Promise(resolve => {
+            var bufs = [];
+            response.data.on('data', (d) => bufs.push(d));
+            response.data.on('end', () => {
+                logger.verbose(`ended @ ${perf_hooks_1.performance.now()}`);
+                const buf = Buffer.concat(bufs);
+                resolve(buf);
+            });
+        });
+        //return response.data;
     });
 }
 // function to read a single blob

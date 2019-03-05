@@ -80,7 +80,7 @@ async function readChunk(index: number, size: number) {
     return axios({
         method: 'get',
         url,
-        responseType: 'arraybuffer',
+        responseType: 'stream',
         headers: {
             'x-ms-date': new Date().toUTCString(),
             'x-ms-version': '2017-07-29',
@@ -90,7 +90,18 @@ async function readChunk(index: number, size: number) {
     }).then(response => {
         performance.mark(`read-${index}:firstByte`);
         logger.info(`first byte received [${index}] @ ${performance.now()}...`);
-        return response.data;
+
+        return new Promise<Buffer>(resolve => {
+            var bufs: any[] = [];
+            response.data.on('data', (d: any) => bufs.push(d));
+            response.data.on('end', () => {
+                logger.verbose(`ended @ ${performance.now()}`);
+                const buf = Buffer.concat(bufs);
+                resolve(buf);
+            });
+        });
+
+        //return response.data;
     });
 }
 
