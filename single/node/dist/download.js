@@ -130,6 +130,7 @@ async function startup() {
         });
         obs.observe({ entryTypes: ['measure'], buffered: true });
         // read the blob
+        logger.verbose(`starting @ ${perf_hooks_1.performance.now()}`);
         perf_hooks_1.performance.mark('start-transfer');
         await readBlob();
         perf_hooks_1.performance.mark('complete-transfer');

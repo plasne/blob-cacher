@@ -166,6 +166,7 @@ async function startup() {
         obs.observe({ entryTypes: ['measure'], buffered: true });
 
         // read the blob
+        logger.verbose(`starting @ ${performance.now()}`);
         performance.mark('start-transfer');
         await readBlob();
         performance.mark('complete-transfer');
