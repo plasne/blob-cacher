@@ -3,3 +3,4 @@
 **/dotnet/obj
 **/node_modules
 .vscode
+**/*.file
