@@ -70,13 +70,14 @@ const logger = winston.createLogger({
 async function readChunk(index: number, size: number) {
     const chunkStart = index * size;
     const chunkStop = (index + 1) * size - 1;
-    logger.verbose(`getting ${chunkStart} to ${chunkStop}...`);
+    const url: string =
+        chunkStart === 0 ? `${URL}${STORAGE_SAS}` : `${URL2}${STORAGE_SAS}`;
+    logger.verbose(`getting ${chunkStart} to ${chunkStop} from ${url}...`);
 
     performance.mark('start-request');
     return axios({
         method: 'get',
-        url:
-            chunkStart === 0 ? `${URL}${STORAGE_SAS}` : `${URL2}${STORAGE_SAS}`,
+        url,
         responseType: 'stream',
         headers: {
             'x-ms-date': new Date().toUTCString(),
