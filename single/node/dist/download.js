@@ -80,7 +80,7 @@ async function readChunk(index, size) {
         maxContentLength: 90886080
     }).then(data => {
         perf_hooks_1.performance.mark('complete-request');
-        perf_hooks_1.performance.measure('request time', 'start-request', 'complete-request');
+        perf_hooks_1.performance.measure('1. request time', 'start-request', 'complete-request');
         return data;
     });
 }
@@ -94,17 +94,20 @@ async function readBlob() {
         promises.push(promise);
     }
     await Promise.all(promises).then(async (values) => {
-        perf_hooks_1.performance.mark('start-write');
-        const file = fs.createWriteStream('./output.file');
-        values.sort((a, b) => a.index - b.index);
-        const streams = [];
-        for (const value of values) {
-            streams.push(value.data);
-        }
-        MultiStream(streams).pipe(file);
-        file.on('close', () => {
-            perf_hooks_1.performance.mark('complete-write');
-            perf_hooks_1.performance.measure('write time', 'start-write', 'complete-write');
+        return new Promise(resolve => {
+            perf_hooks_1.performance.mark('start-write');
+            const file = fs.createWriteStream('./output.file');
+            values.sort((a, b) => a.index - b.index);
+            const streams = [];
+            for (const value of values) {
+                streams.push(value.data);
+            }
+            MultiStream(streams).pipe(file);
+            file.on('close', () => {
+                perf_hooks_1.performance.mark('complete-write');
+                perf_hooks_1.performance.measure('2. write time', 'start-write', 'complete-write');
+                resolve();
+            });
         });
     });
 }
@@ -128,13 +131,18 @@ async function startup() {
         }
         // observe measures
         const obs = new perf_hooks_1.PerformanceObserver(list => {
-            for (const entry of list.getEntries()) {
+            const entries = list.getEntries();
+            entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+            for (const entry of entries) {
                 logger.verbose(`measure "${entry.name}": ${entry.duration}`);
             }
         });
         obs.observe({ entryTypes: ['measure'], buffered: true });
         // read the blob
+        perf_hooks_1.performance.mark('start-transfer');
         await readBlob();
+        perf_hooks_1.performance.mark('complete-transfer');
+        perf_hooks_1.performance.measure('3. total time', 'start-transfer', 'complete-transfer');
     }
     catch (error) {
         logger.error(`Error during startup...`);
