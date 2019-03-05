@@ -85,14 +85,15 @@ async function readChunk(index: number, size: number) {
             'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
         },
         maxContentLength: 90886080
-    }).then(data => {
+    }).then(response => {
         performance.mark('complete-request');
+        console.log(`req ${performance.now()}`);
         performance.measure(
             '1. request time',
             'start-request',
             'complete-request'
         );
-        return data;
+        return response.data;
     });
 }
 
@@ -109,14 +110,18 @@ async function readBlob() {
 
     await Promise.all(promises).then(async values => {
         return new Promise(resolve => {
+            values[0].on('end', () => {
+                console.log(`end ${performance.now()}`);
+            });
+            values[0].on('close', () => {
+                console.log('close');
+            });
+            values[0].on('finish', () => {
+                console.log('finish');
+            });
             performance.mark('start-write');
             const file = fs.createWriteStream('./output.file');
-            values.sort((a, b) => a.index - b.index);
-            const streams: any[] = [];
-            for (const value of values) {
-                streams.push(value.data);
-            }
-            MultiStream(streams).pipe(file);
+            MultiStream(values).pipe(file);
             file.on('close', () => {
                 performance.mark('complete-write');
                 performance.measure(

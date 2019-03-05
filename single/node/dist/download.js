@@ -69,10 +69,11 @@ async function readChunk(index, size) {
             'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
         },
         maxContentLength: 90886080
-    }).then(data => {
+    }).then(response => {
         perf_hooks_1.performance.mark('complete-request');
+        console.log(`req ${perf_hooks_1.performance.now()}`);
         perf_hooks_1.performance.measure('1. request time', 'start-request', 'complete-request');
-        return data;
+        return response.data;
     });
 }
 // function to read a single blob
@@ -86,14 +87,18 @@ async function readBlob() {
     }
     await Promise.all(promises).then(async (values) => {
         return new Promise(resolve => {
+            values[0].on('end', () => {
+                console.log(`end ${perf_hooks_1.performance.now()}`);
+            });
+            values[0].on('close', () => {
+                console.log('close');
+            });
+            values[0].on('finish', () => {
+                console.log('finish');
+            });
             perf_hooks_1.performance.mark('start-write');
             const file = fs.createWriteStream('./output.file');
-            values.sort((a, b) => a.index - b.index);
-            const streams = [];
-            for (const value of values) {
-                streams.push(value.data);
-            }
-            MultiStream(streams).pipe(file);
+            MultiStream(values).pipe(file);
             file.on('close', () => {
                 perf_hooks_1.performance.mark('complete-write');
                 perf_hooks_1.performance.measure('2. write time', 'start-write', 'complete-write');
