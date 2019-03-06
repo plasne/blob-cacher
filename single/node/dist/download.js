@@ -28,7 +28,7 @@ cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, w
     .option('-u, --url <s>', '[REQUIRED*] URL. Specify the URL of the file to retrieve.')
     .option('-s, --sas <s>', '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.')
     .option('-n, --concurrency <i>', 'CONCURRENCY. The number of simultaneous reads. Default is "1".', parseInt)
-    .option('--source-method <s>', 'SOURCE_METHOD. If "url" then only the URL is used. If "round-robin" then URL plus any URL_# environment variables are used. Defaults to "url".')
+    .option('--source-method <s>', 'SOURCE_METHOD. If "url" then only the URL is used. If "round-robin" then URL plus any URL_# environment variables are used. If "assemble" then URL plus .# per concurrency are assembled. Defaults to "url".')
     .parse(process.argv);
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
@@ -45,7 +45,7 @@ let urlIndex = 0;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 1;
 let SOURCE_METHOD = cmd.sourceMethod || process.env.SOURCE_METHOD;
-if (!['url', 'round-robin'].includes(SOURCE_METHOD))
+if (!['url', 'round-robin', 'assemble'].includes(SOURCE_METHOD))
     SOURCE_METHOD = 'url';
 // start logging
 const logColors = {
@@ -82,20 +82,29 @@ async function readChunk(index, size) {
                 const use = listOfUrls[urlIndex];
                 urlIndex++;
                 return use;
+            case 'assemble':
+                return `${URL}.${index}`;
         }
     })() + STORAGE_SAS;
     logger.info(`getting [${index}] ${chunkStart} to ${chunkStop} from ${url} @ ${perf_hooks_1.performance.now()}...`);
     perf_hooks_1.performance.mark(`read-${index}:started`);
+    // define headers
+    const headers = {
+        'x-ms-date': new Date().toUTCString(),
+        'x-ms-version': '2017-07-29'
+    };
+    switch (SOURCE_METHOD) {
+        case 'url':
+        case 'round-robin':
+            headers['x-ms-range'] = `bytes=${chunkStart}-${chunkStop}`;
+            break;
+    }
     // get the chunk
     return axios_1.default({
         method: 'get',
         url,
         responseType: 'stream',
-        headers: {
-            'x-ms-date': new Date().toUTCString(),
-            'x-ms-version': '2017-07-29',
-            'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
-        },
+        headers,
         maxContentLength: 90886080
     }).then(response => {
         perf_hooks_1.performance.mark(`read-${index}:firstByte`);

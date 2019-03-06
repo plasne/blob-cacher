@@ -35,7 +35,7 @@ cmd.option(
     )
     .option(
         '--source-method <s>',
-        'SOURCE_METHOD. If "url" then only the URL is used. If "round-robin" then URL plus any URL_# environment variables are used. Defaults to "url".'
+        'SOURCE_METHOD. If "url" then only the URL is used. If "round-robin" then URL plus any URL_# environment variables are used. If "assemble" then URL plus .# per concurrency are assembled. Defaults to "url".'
     )
     .parse(process.argv);
 
@@ -52,7 +52,8 @@ let urlIndex = 0;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 1;
 let SOURCE_METHOD = cmd.sourceMethod || process.env.SOURCE_METHOD;
-if (!['url', 'round-robin'].includes(SOURCE_METHOD)) SOURCE_METHOD = 'url';
+if (!['url', 'round-robin', 'assemble'].includes(SOURCE_METHOD))
+    SOURCE_METHOD = 'url';
 
 // start logging
 const logColors: {
@@ -98,6 +99,8 @@ async function readChunk(index: number, size: number) {
                     const use = listOfUrls[urlIndex];
                     urlIndex++;
                     return use;
+                case 'assemble':
+                    return `${URL}.${index}`;
             }
         })() + STORAGE_SAS;
     logger.info(
@@ -105,16 +108,24 @@ async function readChunk(index: number, size: number) {
     );
     performance.mark(`read-${index}:started`);
 
+    // define headers
+    const headers = {
+        'x-ms-date': new Date().toUTCString(),
+        'x-ms-version': '2017-07-29'
+    };
+    switch (SOURCE_METHOD) {
+        case 'url':
+        case 'round-robin':
+            headers['x-ms-range'] = `bytes=${chunkStart}-${chunkStop}`;
+            break;
+    }
+
     // get the chunk
     return axios({
         method: 'get',
         url,
         responseType: 'stream',
-        headers: {
-            'x-ms-date': new Date().toUTCString(),
-            'x-ms-version': '2017-07-29',
-            'x-ms-range': `bytes=${chunkStart}-${chunkStop}`
-        },
+        headers,
         maxContentLength: 90886080
     }).then(response => {
         performance.mark(`read-${index}:firstByte`);
