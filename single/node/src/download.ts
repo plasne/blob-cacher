@@ -4,12 +4,13 @@
 // * I tested multiple fs.write() threads in a sparse file instead of streams, this was a bit faster but isn't supported on Windows
 
 // includes
+import axios from 'axios';
+import bytes from 'bytes';
 import cmd = require('commander');
 import dotenv = require('dotenv');
 import * as winston from 'winston';
 import * as fs from 'fs';
 import { performance, PerformanceObserver } from 'perf_hooks';
-import axios from 'axios';
 
 // set env
 dotenv.config();
@@ -27,6 +28,10 @@ cmd.option(
     .option(
         '-s, --sas <s>',
         '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.'
+    )
+    .option(
+        '-z, --file-size <s>',
+        '[REQUIRED] FILE_SIZE. The size of the file to download. You can use 80MB, 1TB, 100KB, etc. Set this to a bit bigger than the file.'
     )
     .option(
         '-n, --concurrency <i>',
@@ -51,6 +56,7 @@ for (let i = 0; i < 99; i++) {
 let urlIndex = 0;
 const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 1;
+const FILE_SIZE = cmd.fileSize || process.env.FILE_SIZE;
 let SOURCE_METHOD = cmd.sourceMethod || process.env.SOURCE_METHOD;
 if (!['url', 'round-robin', 'assemble'].includes(SOURCE_METHOD))
     SOURCE_METHOD = 'url';
@@ -149,8 +155,7 @@ async function writeChunk(file: fs.WriteStream, stream: any) {
 }
 
 async function readBlob() {
-    const max = 83886080;
-    const segment = Math.ceil(max / CONCURRENCY);
+    const segment = Math.ceil(bytes(FILE_SIZE) / CONCURRENCY);
 
     const promises: any[] = [];
     for (let i = 0; i < CONCURRENCY; i++) {
@@ -175,14 +180,15 @@ async function startup() {
         logger.info(
             `STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`
         );
+        logger.info(`FILE_SIZE is "${FILE_SIZE}".`);
         logger.info(`CONCURRENCY is "${CONCURRENCY}".`);
         logger.info(`SOURCE_METHOD is "${SOURCE_METHOD}".`);
 
         // validate
-        if (URL && STORAGE_SAS) {
+        if (URL && STORAGE_SAS && FILE_SIZE) {
             // ok
         } else {
-            logger.error('You must specify both URL and STORAGE_SAS.');
+            logger.error('You must specify URL, STORAGE_SAS, and FILE_SIZE.');
             process.exit(1);
         }
 
