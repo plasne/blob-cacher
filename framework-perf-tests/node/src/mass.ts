@@ -1,15 +1,10 @@
 // includes
-import agentkeepalive = require('agentkeepalive');
 import cluster = require('cluster');
 import cmd = require('commander');
-import crypto = require('crypto');
 import dotenv = require('dotenv');
-import { lookup } from 'lookup-dns-cache';
 import loremIpsum = require('lorem-ipsum');
 import { v4 as uuid } from 'uuid';
 import * as winston from 'winston';
-import querystring = require('query-string');
-import * as request from 'request';
 
 // set env
 dotenv.config();
@@ -21,26 +16,6 @@ cmd.option(
     /^(error|warn|info|verbose|debug|silly)$/i
 )
     .option(
-        '-a, --account <s>',
-        '[REQUIRED*] STORAGE_ACCOUNT. The name of the storage account. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.'
-    )
-    .option(
-        '-c, --container <s>',
-        '[REQUIRED*] STORAGE_CONTAINER. The name of the storage container. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.'
-    )
-    .option(
-        '-u, --url <s>',
-        '[REQUIRED*] URL. Specify an arbitrary URL instead of doing a PUT to the blob services account. You must either specify STORAGE_ACCOUNT and STORAGE_CONTAINER or URL.'
-    )
-    .option(
-        '-k, --key <s>',
-        '[REQUIRED*] STORAGE_KEY. The key for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.'
-    )
-    .option(
-        '-s, --sas <s>',
-        '[REQUIRED*] STORAGE_SAS. The SAS token for accessing an Azure Storage Account. You must specify either the STORAGE_KEY or STORAGE_SAS unless using URL.'
-    )
-    .option(
         '-z, --file-size <i>',
         'FILE_SIZE. The file to be used for testing will be roughly this size in kilobytes. Default is "100" kb.',
         parseInt
@@ -51,8 +26,8 @@ cmd.option(
         parseInt
     )
     .option(
-        '-m, --max-sockets <i>',
-        'MAX_SOCKETS. The total number of simultaneous outbound connections (per process). Default is "1000".',
+        '-c, --concurrency <i>',
+        'CONCURRENCY. The number of files being written at the same time in a process. Default is "10".',
         parseInt
     )
     .option(
@@ -64,37 +39,10 @@ cmd.option(
 
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
-const STORAGE_ACCOUNT = cmd.account || process.env.STORAGE_ACCOUNT;
-const STORAGE_CONTAINER = cmd.container || process.env.STORAGE_CONTAINER;
-const URL = cmd.url || process.env.URL;
-const STORAGE_KEY = cmd.key || process.env.STORAGE_KEY;
-const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const FILE_SIZE = cmd.fileSize || process.env.FILE_SIZE || 100;
 const FILE_COUNT = cmd.fileCount || process.env.FILE_COUNT || 100;
-const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
+const CONCURRENCY = cmd.concurrency || process.env.CONCURRENCY || 10;
 const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
-
-// counters
-const counters = {
-    duration: 0,
-    count: 0,
-    wait: 0,
-    dns: 0,
-    tcp: 0,
-    firstByte: 0,
-    download: 0,
-    total: 0
-};
-
-// agents
-const httpagent = new agentkeepalive({
-    keepAlive: true,
-    maxSockets: MAX_SOCKETS
-});
-const httpsagent = new agentkeepalive.HttpsAgent.HttpsAgent({
-    keepAlive: true,
-    maxSockets: MAX_SOCKETS
-});
 
 // start logging
 const logColors: {
@@ -123,114 +71,6 @@ const logger = winston.createLogger({
     level: LOG_LEVEL,
     transports: [transport]
 });
-
-// function to generate a signature using a storage key
-function generateSignature(method: string, path: string, options: any) {
-    // pull out all querystring parameters so they can be sorted and used in the signature
-    const parameters: string[] = [];
-    const parsed = querystring.parseUrl(options.url);
-    for (const key in parsed.query) {
-        if (Object.prototype.hasOwnProperty.call(parsed.query, key)) {
-            parameters.push(`${key}:${parsed.query[key]}`);
-        }
-    }
-    parameters.sort((a, b) => a.localeCompare(b));
-
-    // pull out all x-ms- headers so they can be sorted and used in the signature
-    const xheaders: string[] = [];
-    for (const key in options.headers) {
-        if (key.substring(0, 5) === 'x-ms-') {
-            xheaders.push(`${key}:${options.headers[key]}`);
-        }
-    }
-    xheaders.sort((a, b) => a.localeCompare(b));
-
-    // zero length for the body is an empty string, not 0
-    const len = options.body ? Buffer.byteLength(options.body) : '';
-
-    // potential content-type, if-none-match
-    const ct = options.headers['Content-Type'] || '';
-    const none = options.headers['If-None-Match'] || '';
-
-    // generate the signature line
-    let raw = `${method}\n\n\n${len}\n\n${ct}\n\n\n\n${none}\n\n\n${xheaders.join(
-        '\n'
-    )}\n/${STORAGE_ACCOUNT}/${STORAGE_CONTAINER}`;
-    if (path) raw += `/${path}`;
-    raw += parameters.length > 0 ? `\n${parameters.join('\n')}` : '';
-
-    // sign it
-    const hmac = crypto.createHmac(
-        'sha256',
-        Buffer.from(STORAGE_KEY, 'base64')
-    );
-    const signature = hmac.update(raw, 'utf8').digest('base64');
-
-    // return the Authorization header
-    return `SharedKey ${STORAGE_ACCOUNT}:${signature}`;
-}
-
-// function to create a blob with a single blob
-function createBlob(filename: string, content: string) {
-    return new Promise((resolve, reject) => {
-        // determine the url
-        const url: string =
-            URL ||
-            `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${
-                STORAGE_SAS ? STORAGE_SAS + '&' : '?'
-            }`;
-
-        // specify the request options, including the headers
-        const options = {
-            agent: url.toLowerCase().startsWith('https://')
-                ? httpsagent
-                : httpagent,
-            body: content,
-            headers: {
-                'x-ms-blob-type': 'BlockBlob',
-                'x-ms-date': new Date().toUTCString(),
-                'x-ms-version': '2017-07-29'
-            } as any,
-            lookup,
-            time: true,
-            url
-        };
-
-        // generate and apply the signature
-        if (!URL && !STORAGE_SAS && STORAGE_KEY) {
-            const signature = generateSignature('PUT', filename, options);
-            options.headers.Authorization = signature;
-        }
-
-        // execute
-        request.put(options, (error, response) => {
-            if (
-                !error &&
-                response.statusCode >= 200 &&
-                response.statusCode < 300
-            ) {
-                if (response.timingPhases) {
-                    counters.count++;
-                    counters.wait += response.timingPhases.wait;
-                    counters.dns += response.timingPhases.dns;
-                    counters.tcp += response.timingPhases.tcp;
-                    counters.firstByte += response.timingPhases.firstByte;
-                    counters.download += response.timingPhases.download;
-                    counters.total += response.timingPhases.total;
-                }
-                resolve();
-            } else if (error) {
-                reject(error);
-            } else {
-                reject(
-                    new Error(
-                        `${response.statusCode}: ${response.statusMessage}`
-                    )
-                );
-            }
-        });
-    });
-}
 
 // function to generate a file of roughly a given size
 function generate() {
