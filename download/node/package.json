@@ -13,6 +13,7 @@
         "@types/query-string": "^6.2.0",
         "@types/request": "^2.48.1",
         "@types/uuid": "^3.4.4",
+        "@types/xmldom": "^0.1.29",
         "tslint": "^5.12.1",
         "typescript": "^3.3.3"
     },
@@ -30,6 +31,8 @@
         "query-string": "^6.2.0",
         "request": "^2.88.0",
         "uuid": "^3.3.2",
-        "winston": "^3.2.1"
+        "winston": "^3.2.1",
+        "xmldom": "^0.1.27",
+        "xpath": "0.0.27"
     }
 }

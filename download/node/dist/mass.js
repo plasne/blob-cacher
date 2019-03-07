@@ -7,15 +7,21 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+// includes
 const agentkeepalive = require("agentkeepalive");
 const cluster = require("cluster");
 const cmd = require("commander");
 const dotenv = require("dotenv");
+const fs = __importStar(require("fs"));
 const lookup_dns_cache_1 = require("lookup-dns-cache");
-const uuid_1 = require("uuid");
+const path = __importStar(require("path"));
+const url = __importStar(require("url"));
 const winston = __importStar(require("winston"));
-const querystring = require("query-string");
 const request = __importStar(require("request"));
+const events_1 = require("events");
+const xpath = __importStar(require("xpath"));
+const dom = __importStar(require("xmldom"));
+const perf_hooks_1 = require("perf_hooks");
 // set env
 dotenv.config();
 // define options
@@ -26,6 +32,7 @@ cmd.option('-l, --log-level <s>', 'LOG_LEVEL. The minimum level to log (error, w
     .option('-t, --target <s>', '[REQUIRED] TARGET. The path to download the files to.')
     .option('-m, --max-sockets <i>', 'MAX_SOCKETS. The total number of simultaneous outbound connections (per process). Default is "1000".', parseInt)
     .option('-p, --processes <i>', 'PROCESSES. The number of processes that the work should be divided between. Default is "1".', parseInt)
+    .option('--top <i>', 'TOP. Once this count is reached, no more blobs are fetched. Default is unlimited.', parseInt)
     .parse(process.argv);
 // variables
 const LOG_LEVEL = cmd.logLevel || process.env.LOG_LEVEL || 'info';
@@ -35,12 +42,10 @@ const STORAGE_SAS = cmd.sas || process.env.STORAGE_SAS;
 const TARGET = cmd.target || process.env.TARGET;
 const MAX_SOCKETS = cmd.maxSockets || process.env.MAX_SOCKETS || 1000;
 const PROCESSES = cmd.processes || process.env.PROCESSES || 1;
+const TOP = cmd.top || process.env.TOP || Number.MAX_SAFE_INTEGER;
+let topCounter = 0;
 // agents
-const httpagent = new agentkeepalive({
-    keepAlive: true,
-    maxSockets: MAX_SOCKETS
-});
-const httpsagent = new agentkeepalive.HttpsAgent.HttpsAgent({
+const httpsagent = new agentkeepalive.HttpsAgent({
     keepAlive: true,
     maxSockets: MAX_SOCKETS
 });
@@ -64,143 +69,195 @@ const logger = winston.createLogger({
     level: LOG_LEVEL,
     transports: [transport]
 });
-// function to generate a signature using a storage key
-function generateSignature(method, path, options) {
-    // pull out all querystring parameters so they can be sorted and used in the signature
-    const parameters = [];
-    const parsed = querystring.parseUrl(options.url);
-    for (const key in parsed.query) {
-        if (Object.prototype.hasOwnProperty.call(parsed.query, key)) {
-            parameters.push(`${key}:${parsed.query[key]}`);
-        }
-    }
-    parameters.sort((a, b) => a.localeCompare(b));
-    // pull out all x-ms- headers so they can be sorted and used in the signature
-    const xheaders = [];
-    for (const key in options.headers) {
-        if (key.substring(0, 5) === 'x-ms-') {
-            xheaders.push(`${key}:${options.headers[key]}`);
-        }
-    }
-    xheaders.sort((a, b) => a.localeCompare(b));
-    // zero length for the body is an empty string, not 0
-    const len = options.body ? Buffer.byteLength(options.body) : '';
-    // potential content-type, if-none-match
-    const ct = options.headers['Content-Type'] || '';
-    const none = options.headers['If-None-Match'] || '';
-    // generate the signature line
-    let raw = `${method}\n\n\n${len}\n\n${ct}\n\n\n\n${none}\n\n\n${xheaders.join('\n')}\n/${STORAGE_ACCOUNT}/${STORAGE_CONTAINER}`;
-    if (path)
-        raw += `/${path}`;
-    raw += parameters.length > 0 ? `\n${parameters.join('\n')}` : '';
-    // sign it
-    const hmac = crypto.createHmac('sha256', Buffer.from(STORAGE_KEY, 'base64'));
-    const signature = hmac.update(raw, 'utf8').digest('base64');
-    // return the Authorization header
-    return `SharedKey ${STORAGE_ACCOUNT}:${signature}`;
-}
-// function to create a blob with a single blob
-function createBlob(filename, content) {
+async function readBlob(urlpath) {
     return new Promise((resolve, reject) => {
-        // determine the url
-        const url = URL ||
-            `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${filename}${STORAGE_SAS ? STORAGE_SAS + '&' : '?'}`;
+        try {
+            // specify the request options, including the headers
+            const options = {
+                agent: httpsagent,
+                headers: {
+                    'x-ms-date': new Date().toUTCString(),
+                    'x-ms-version': '2017-07-29'
+                },
+                lookup: lookup_dns_cache_1.lookup,
+                time: true,
+                url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}/${urlpath}${STORAGE_SAS}`
+            };
+            // get the filename
+            const filename = (() => {
+                const pathname = url.parse(urlpath).pathname;
+                if (pathname) {
+                    const pathparts = pathname.split('/');
+                    return pathparts[pathparts.length - 1];
+                }
+                else {
+                    return 'output.file';
+                }
+            })();
+            // open the file for writing
+            const filepath = path.join(TARGET, filename);
+            const file = fs.createWriteStream(filepath);
+            logger.verbose(`[${process.pid}] downloading ${options.url} to ${filepath}...`);
+            // record the counters
+            const counters = {
+                bytes: 0,
+                count: 0,
+                wait: 0,
+                dns: 0,
+                tcp: 0,
+                firstByte: 0,
+                download: 0,
+                total: 0
+            };
+            // execute
+            request
+                .get(options, (error, response) => {
+                if (!error &&
+                    response.statusCode >= 200 &&
+                    response.statusCode < 300) {
+                    if (response.timingPhases) {
+                        counters.wait = response.timingPhases.wait;
+                        counters.dns = response.timingPhases.dns;
+                        counters.tcp = response.timingPhases.tcp;
+                        counters.firstByte =
+                            response.timingPhases.firstByte;
+                        counters.download = response.timingPhases.download;
+                        counters.total = response.timingPhases.total;
+                    }
+                    logger.verbose(`[${process.pid}] first byte for ${options.url}...`);
+                }
+                else if (error) {
+                    logger.verbose(`error downloading ${options.url}...`);
+                    logger.error(error.message);
+                    reject(error);
+                }
+                else {
+                    const error = new Error(`${response.statusCode}: ${response.statusMessage}`);
+                    logger.verbose(`error downloading ${options.url}...`);
+                    logger.error(error.message);
+                    reject(error);
+                }
+            })
+                .pipe(file)
+                .on('finish', () => {
+                fs.stat(filepath, (error, stats) => {
+                    if (!error) {
+                        logger.verbose(`[${process.pid}] completed download for ${options.url} with ${stats.size} bytes...`);
+                        counters.bytes = stats.size;
+                    }
+                    else {
+                        logger.verbose(`[${process.pid}] completed download for ${options.url} with unknown bytes...`);
+                    }
+                    counters.count = 1;
+                    resolve(counters);
+                });
+            });
+        }
+        catch (error) {
+            logger.error(`error during readBlob...`);
+            logger.error(error.message);
+            reject(error);
+        }
+    });
+}
+function listBlobs(blobs, marker) {
+    try {
         // specify the request options, including the headers
         const options = {
-            agent: url.toLowerCase().startsWith('https://')
-                ? httpsagent
-                : httpagent,
-            body: content,
+            agent: httpsagent,
             headers: {
-                'x-ms-blob-type': 'BlockBlob',
                 'x-ms-date': new Date().toUTCString(),
                 'x-ms-version': '2017-07-29'
             },
             lookup: lookup_dns_cache_1.lookup,
             time: true,
-            url
+            url: `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${STORAGE_CONTAINER}${STORAGE_SAS}&restype=container&comp=list${marker ? '&marker=' + marker : ''}`
         };
-        // generate and apply the signature
-        if (!URL && !STORAGE_SAS && STORAGE_KEY) {
-            const signature = generateSignature('PUT', filename, options);
-            options.headers.Authorization = signature;
-        }
         // execute
-        request.put(options, (error, response) => {
+        request.get(options, (error, response, body) => {
             if (!error &&
                 response.statusCode >= 200 &&
                 response.statusCode < 300) {
-                if (response.timingPhases) {
-                    counters.count++;
-                    counters.wait += response.timingPhases.wait;
-                    counters.dns += response.timingPhases.dns;
-                    counters.tcp += response.timingPhases.tcp;
-                    counters.firstByte += response.timingPhases.firstByte;
-                    counters.download += response.timingPhases.download;
-                    counters.total += response.timingPhases.total;
+                const doc = new dom.DOMParser().parseFromString(body);
+                // extract the filenames
+                for (let blob of xpath.select('/EnumerationResults/Blobs/Blob', doc)) {
+                    if (topCounter < TOP) {
+                        const filename = xpath.select1('string(Name)', blob);
+                        blobs.emit('blob', filename);
+                        topCounter++;
+                    }
                 }
-                resolve();
+                // get the next marker
+                const next = xpath.select1('string(/EnumerationResults/NextMarker)', doc);
+                if (next && topCounter < TOP) {
+                    listBlobs(blobs, next.toString());
+                    blobs.emit('next');
+                }
+                else {
+                    blobs.emit('end');
+                }
             }
             else if (error) {
-                reject(error);
+                logger.verbose(`error listing ${options.url}...`);
+                logger.error(error.message);
             }
             else {
-                reject(new Error(`${response.statusCode}: ${response.statusMessage}`));
+                const error = new Error(`${response.statusCode}: ${response.statusMessage}`);
+                logger.verbose(`error listing ${options.url}...`);
+                logger.error(error.message);
             }
         });
-    });
+    }
+    catch (error) {
+        logger.error(`error during listBlobs...`);
+        logger.error(error.message);
+    }
 }
-// function to generate a file of roughly a given size
-function generate() {
-    return loremIpsum({
-        count: 153 * FILE_SIZE,
-        format: 'plain',
-        units: 'words'
-    });
-}
-async function spawn(count) {
+async function spawn() {
     try {
         logger.verbose(`worker pid "${process.pid}" started...`);
-        // create random data
-        logger.verbose(`worker pid "${process.pid}" generating data...`);
-        const files = [];
-        for (let i = 0; i < count; i++) {
-            const id = uuid_1.v4();
-            const data = generate();
-            files.push({ id, data });
-        }
-        logger.verbose(`worker pid "${process.pid}" finished generating data.`);
-        // start the clock
-        const startTime = new Date().valueOf();
-        // post the data all at the same time
-        const promises = [];
-        for (let i = 0; i < count; i++) {
-            const o = files[i];
-            const promise = createBlob(o.id, o.data).catch(error => {
-                logger.error(`Error during createBlob...`);
-                logger.error(error.message);
-            });
-            promises.push(promise);
-        }
-        // wait for completion
-        logger.verbose(`worker pid "${process.pid}" sending ${files.length} files...`);
-        await Promise.all(promises);
-        logger.verbose(`worker pid "${process.pid}" sent ${files.length} files.`);
-        // record the time
-        const duration = new Date().valueOf() - startTime;
-        logger.verbose(`worker pid "${process.pid}" completed after ${duration} ms.`);
-        counters.duration += duration;
-        if (process.send)
-            process.send(JSON.stringify(counters));
+        let open = 0;
+        let shouldShutdown = false;
+        const shutdown = () => {
+            logger.info(`worker pid "${process.pid}" stopped.`);
+            if (process.send)
+                process.send('shutdown');
+            // do this instead of process.exit() so we are sure all counters are dispatched
+        };
+        process.on('message', async (message) => {
+            try {
+                switch (message) {
+                    case 'shutdown': {
+                        shouldShutdown = true;
+                        if (open < 1)
+                            shutdown();
+                        return;
+                    }
+                    default: {
+                        open++;
+                        const counters = await readBlob(message);
+                        if (process.send)
+                            process.send(counters);
+                        break;
+                    }
+                }
+            }
+            catch (error) {
+                // already logged
+            }
+            open--;
+            if (shouldShutdown && open < 1)
+                shutdown();
+        });
     }
     catch (error) {
         logger.error(`Error during spawn...`);
         logger.error(error.message);
     }
 }
-function display() {
-    logger.info(`duration: ${counters.duration} ms`);
+function display(counters) {
     logger.info(`count: ${counters.count}`);
+    logger.info(`bytes: ${counters.bytes}`);
     logger.info(`wait: ${Math.round(counters.wait)} (${Math.round((counters.wait / counters.total) * 100)}%)`);
     logger.info(`dns: ${Math.round(counters.dns)} (${Math.round((counters.dns / counters.total) * 100)}%)`);
     logger.info(`tcp: ${Math.round(counters.tcp)} (${Math.round((counters.tcp / counters.total) * 100)}%)`);
@@ -216,61 +273,100 @@ async function startup() {
             console.log(`LOG_LEVEL is "${LOG_LEVEL}".`);
             logger.info(`STORAGE_ACCOUNT is "${STORAGE_ACCOUNT}".`);
             logger.info(`STORAGE_CONTAINER is "${STORAGE_CONTAINER}".`);
-            logger.info(`URL is "${URL}".`);
-            logger.info(`STORAGE_KEY is "${STORAGE_KEY ? 'defined' : 'undefined'}"`);
             logger.info(`STORAGE_SAS is "${STORAGE_SAS ? 'defined' : 'undefined'}"`);
-            logger.info(`FILE_SIZE is "${FILE_SIZE}" kb.`);
-            logger.info(`FILE_COUNT is "${FILE_COUNT}".`);
+            logger.info(`TARGET is "${TARGET}".`);
             logger.info(`MAX_SOCKETS is "${MAX_SOCKETS}".`);
             logger.info(`PROCESSES is "${PROCESSES}".`);
+            logger.info(`TOP is "${TOP}".`);
             // validate
-            if ((STORAGE_ACCOUNT && STORAGE_CONTAINER) || URL) {
+            if (STORAGE_ACCOUNT && STORAGE_CONTAINER && TARGET) {
                 // ok
             }
             else {
-                logger.error('You must specify both STORAGE_ACCOUNT and STORAGE_CONTAINER unless using URL.');
-                process.exit(1);
-            }
-            if (STORAGE_KEY || STORAGE_SAS || URL) {
-                // ok
-            }
-            else {
-                logger.error('You must specify either STORAGE_KEY or STORAGE_SAS unless using URL.');
+                logger.error('You must specify both STORAGE_ACCOUNT, STORAGE_CONTAINER, and TARGET.');
                 process.exit(1);
             }
             // spawn workers
+            const workers = [];
             for (let i = 0; i < PROCESSES; i++) {
-                cluster.fork();
+                const worker = cluster.fork();
+                workers.push(worker);
             }
-            // look for a counters message from the worker; then merge and terminate it
+            // look for a counters message from the worker
+            const counters = {
+                bytes: 0,
+                count: 0,
+                wait: 0,
+                dns: 0,
+                tcp: 0,
+                firstByte: 0,
+                download: 0,
+                total: 0
+            };
             cluster.on('message', (worker, message) => {
-                const remote = JSON.parse(message);
-                if (remote.duration > counters.duration) {
-                    counters.duration = remote.duration;
+                if (message === 'shutdown') {
+                    worker.kill();
                 }
-                counters.count += remote.count;
-                counters.wait += remote.wait;
-                counters.dns += remote.dns;
-                counters.tcp += remote.tcp;
-                counters.firstByte += remote.firstByte;
-                counters.download += remote.download;
-                counters.total += remote.total;
-                worker.kill();
+                else {
+                    counters.bytes += message.bytes;
+                    counters.count += message.count;
+                    counters.wait += message.wait;
+                    counters.dns += message.dns;
+                    counters.tcp += message.tcp;
+                    counters.firstByte += message.firstByte;
+                    counters.download += message.download;
+                    counters.total += message.total;
+                }
             });
+            // retrieve all blob filenames, distributing to workers
+            await new Promise(resolve => {
+                try {
+                    let index = 0;
+                    const blobs = new events_1.EventEmitter();
+                    listBlobs(blobs);
+                    blobs.on('blob', (filename) => {
+                        console.log(filename);
+                        workers[index].send(filename);
+                        index++;
+                        if (index >= workers.length)
+                            index = 0;
+                    });
+                    blobs.on('next', () => {
+                        logger.verbose('there are more blobs to be listed...');
+                    });
+                    blobs.on('end', () => {
+                        resolve();
+                    });
+                }
+                catch (error) {
+                    logger.error('error waiting for all filenames...');
+                    logger.error(error.message);
+                    process.exit(1);
+                }
+            });
+            // initiate shutdown
+            for (const worker of workers) {
+                worker.send('shutdown');
+            }
             // wait for all workers to complete
             await new Promise(resolve => {
-                let exits = 0;
-                cluster.on('exit', () => {
-                    exits++;
-                    if (exits >= PROCESSES)
+                cluster.on('exit', worker => {
+                    const wi = workers.indexOf(worker);
+                    if (wi > -1)
+                        workers.splice(wi, 1);
+                    if (workers.length < 1)
                         resolve();
                 });
             });
             // display final stats
-            display();
+            display(counters);
+            const duration = perf_hooks_1.performance.now() / 1000 / 60;
+            logger.info(`${duration} minutes total`);
+            const mbpsec = counters.bytes / 1024 / 1024 / (perf_hooks_1.performance.now() / 1000);
+            logger.info(`${mbpsec} MB per second`);
         }
         else {
-            spawn(FILE_COUNT / PROCESSES);
+            spawn();
         }
         // calculate duration
     }
