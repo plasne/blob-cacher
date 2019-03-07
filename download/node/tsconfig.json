@@ -1,0 +1,22 @@
+{
+    "include": ["./src/**/*"],
+    "compilerOptions": {
+        "outDir": "./dist",
+        "target": "es2018",
+        "module": "commonjs",
+        "lib": ["es2018", "dom"],
+        "strict": true,
+        "noImplicitAny": false,
+        "strictNullChecks": true,
+        "strictFunctionTypes": true,
+        "strictPropertyInitialization": true,
+        "noImplicitThis": true,
+        "alwaysStrict": true,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noImplicitReturns": true,
+        "noFallthroughCasesInSwitch": true,
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": false
+    }
+}
