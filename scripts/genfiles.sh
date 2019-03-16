@@ -5,7 +5,8 @@
 start=$SECONDS
 for (( i = 1; i <= $3; i++))
 do
-    head -c $2 </dev/urandom >$1$( printf %05d "$i" ).file
+    filename=$1$( printf %05d "$i" ).file
+    head -c $2 </dev/urandom >$filename
 done
 duration=$(( SECONDS - start ))
 echo "completed in $SECONDS seconds."
